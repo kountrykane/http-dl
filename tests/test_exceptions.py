@@ -200,7 +200,7 @@ async def example_5_hierarchical_exception_catching():
     print("EXAMPLE 5: Hierarchical Exception Catching")
     print("="*70)
 
-    from hybrid_sec_parser.sec.download import (
+    from httpdl import (
         NetworkError,
         HTTPError,
         ClientError,

@@ -5,7 +5,7 @@ from typing import Optional
 
 import httpx
 
-from .models.config import DownloadSettings
+from .config import DownloadSettings
 from .exceptions import (
     RateLimitError,
     RetryAttemptsExceeded,

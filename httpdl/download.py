@@ -10,7 +10,7 @@ import aiofiles
 import httpx
 
 from .core import BaseDownload
-from .models.config import DownloadSettings
+from .config import DownloadSettings
 from .utils import (
     normalize_content_type,
     extract_charset,
@@ -18,7 +18,7 @@ from .utils import (
     decode_text,
     decompress_transfer,
 )
-from .models.result import DataDownloadResult, FileDownloadResult
+from .models import DataDownloadResult, FileDownloadResult
 from .exceptions import (
     InvalidURLError,
     PayloadSizeLimitError,
