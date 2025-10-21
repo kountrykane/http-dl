@@ -1,0 +1,10 @@
+# Python artifacts
+__pycache__/
+build/
+dist/
+*.egg-info/
+
+# Environment and secrets
+*.venv
+*.env
+Secrets/
