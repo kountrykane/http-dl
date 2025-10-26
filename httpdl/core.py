@@ -9,6 +9,8 @@ from .config import DownloadSettings
 from .exceptions import (
     RateLimitError,
     RetryAttemptsExceeded,
+    TooManyRedirectsError,
+    RedirectLoopError,
     retry_after_from_response,
     NetworkError,
     TimeoutError as DownloadTimeoutError,
@@ -85,12 +87,15 @@ class BaseDownload(ABC):
         """
         raise NotImplementedError
 
-    async def _do_request_with_retry(self, method: str, url: str, stream: bool = False) -> httpx.Response:
+    async def _do_request_with_retry(
+        self, method: str, url: str, stream: bool = False
+    ) -> tuple[httpx.Response, list[str]]:
         """
-        Execute HTTP request with retry logic and structured exception handling.
+        Execute HTTP request with retry logic, redirect handling, and structured exception handling.
 
         Converts httpx low-level exceptions to domain-specific download exceptions
-        and implements retry logic with exponential backoff.
+        and implements retry logic with exponential backoff. Handles redirects manually
+        when follow_redirects is enabled.
 
         Args:
             method: HTTP method (GET, POST, etc.)
@@ -98,12 +103,14 @@ class BaseDownload(ABC):
             stream: Whether to return streaming response
 
         Returns:
-            httpx.Response object
+            Tuple of (httpx.Response object, redirect chain list)
 
         Raises:
             NetworkError: For connection, timeout, DNS failures
             RateLimitError: When server rate limits after all retries
             RetryAttemptsExceeded: When retries exhausted without success
+            TooManyRedirectsError: When redirect count exceeds max_redirects
+            RedirectLoopError: When circular redirect is detected
         """
         assert self._client is not None, "Use async context manager: `async with DownloadClient()`"
         rp = self.settings.retry
@@ -113,8 +120,18 @@ class BaseDownload(ABC):
         for attempt in range(rp.attempts + 1):
             try:
                 if stream:
-                    return await self._client.stream(method, url).__aenter__()
-                resp = await self._client.request(method, url)
+                    resp = await self._client.stream(method, url).__aenter__()
+                    # For streaming, we return immediately without redirect handling
+                    return resp, []
+
+                # Manual redirect handling
+                resp, redirect_chain = await self._follow_redirects(method, url)
+            except TooManyRedirectsError:
+                # Re-raise redirect errors immediately without retry
+                raise
+            except RedirectLoopError:
+                # Re-raise redirect errors immediately without retry
+                raise
             except httpx.ConnectError as exc:
                 last_exception = exc
                 if attempt == rp.attempts:
@@ -212,7 +229,7 @@ class BaseDownload(ABC):
                 await resp.aclose()
                 continue
 
-            return resp
+            return resp, redirect_chain
 
         # Exhausted all retries
         raise RetryAttemptsExceeded(
@@ -240,3 +257,89 @@ class BaseDownload(ABC):
     def _get_host_from_url(self, url: str) -> str:
         """Extract host from URL."""
         return httpx.URL(url).host or ""
+
+    async def _follow_redirects(self, method: str, url: str) -> tuple[httpx.Response, list[str]]:
+        """
+        Follow redirects manually when follow_redirects is enabled.
+
+        Tracks the redirect chain and detects loops and excessive redirects.
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            url: Initial URL to request
+
+        Returns:
+            Tuple of (final response, redirect chain)
+
+        Raises:
+            TooManyRedirectsError: When redirect count exceeds max_redirects
+            RedirectLoopError: When circular redirect is detected
+        """
+        assert self._client is not None
+
+        redirect_chain: list[str] = []
+        current_url = url
+        visited_urls: set[str] = {url}
+
+        # If follow_redirects is disabled, just make the request
+        if not self.settings.follow_redirects:
+            resp = await self._client.request(method, current_url, follow_redirects=False)
+            return resp, []
+
+        for redirect_count in range(self.settings.max_redirects + 1):
+            # Make request without automatic redirect following
+            resp = await self._client.request(method, current_url, follow_redirects=False)
+
+            # Check if this is a redirect status
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                # Not a redirect, return the response
+                return resp, redirect_chain
+
+            # Extract Location header
+            location = resp.headers.get("Location")
+            if not location:
+                # Redirect without Location header, return as-is
+                return resp, redirect_chain
+
+            # Close the redirect response
+            await resp.aclose()
+
+            # Resolve the redirect URL (handle relative URLs)
+            next_url = str(httpx.URL(current_url).join(location))
+
+            # Detect redirect loop
+            if next_url in visited_urls:
+                raise RedirectLoopError(
+                    message=f"Redirect loop detected at URL: {next_url}",
+                    url=url,
+                    loop_url=next_url,
+                    redirect_chain=redirect_chain + [next_url],
+                )
+
+            # Add to redirect chain and visited set
+            redirect_chain.append(next_url)
+            visited_urls.add(next_url)
+
+            # Check if we've exceeded max redirects
+            if redirect_count >= self.settings.max_redirects:
+                raise TooManyRedirectsError(
+                    message=f"Too many redirects: {len(redirect_chain)} exceeds limit",
+                    url=url,
+                    max_redirects=self.settings.max_redirects,
+                    redirect_chain=redirect_chain,
+                )
+
+            # Update method for 303 redirects (always use GET)
+            if resp.status_code == 303:
+                method = "GET"
+
+            # Follow the redirect
+            current_url = next_url
+
+        # This should not be reached due to the check inside the loop
+        raise TooManyRedirectsError(
+            message=f"Too many redirects: {len(redirect_chain)} exceeds limit",
+            url=url,
+            max_redirects=self.settings.max_redirects,
+            redirect_chain=redirect_chain,
+        )

@@ -80,6 +80,10 @@ __all__ = [
     "InternalServerError",
     "BadGatewayError",
     "ServiceUnavailableError",
+    # Redirect errors
+    "RedirectError",
+    "TooManyRedirectsError",
+    "RedirectLoopError",
     # Content errors
     "ContentError",
     "DecompressionError",
@@ -370,6 +374,56 @@ class ServiceUnavailableError(ServerError):
         if not self.message:
             retry_msg = f", retry after {self.retry_after}s" if self.retry_after else ""
             self.message = f"Service unavailable (HTTP {self.status_code}){retry_msg}"
+        DownloadError.__post_init__(self)
+
+
+# ============================================================================
+# Redirect Errors
+# ============================================================================
+
+
+@dataclass(slots=True)
+class RedirectError(DownloadError):
+    """Base class for redirect-related failures."""
+
+    redirect_chain: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class TooManyRedirectsError(RedirectError):
+    """
+    Raised when redirect count exceeds max_redirects limit.
+
+    Guards against excessive redirect chains that may indicate
+    misconfigured servers or redirect loops.
+    """
+
+    max_redirects: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.message:
+            chain_len = len(self.redirect_chain)
+            self.message = (
+                f"Too many redirects: {chain_len} redirects exceeds "
+                f"limit of {self.max_redirects}"
+            )
+        DownloadError.__post_init__(self)
+
+
+@dataclass(slots=True)
+class RedirectLoopError(RedirectError):
+    """
+    Raised when a circular redirect is detected.
+
+    Occurs when a URL in the redirect chain is visited more than once,
+    indicating an infinite redirect loop.
+    """
+
+    loop_url: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not self.message:
+            self.message = f"Redirect loop detected at URL: {self.loop_url}"
         DownloadError.__post_init__(self)
 
 

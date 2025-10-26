@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Optional
 from pathlib import Path
 
@@ -17,6 +17,7 @@ class DataDownloadResult:
     duration_ms: int
     size_bytes: int
     sniff_note: Optional[str]
+    redirect_chain: list[str] = field(default_factory=list)  # URLs visited during redirects
 
     # Should we have this as a common slice, or only in secdowloader, I think it should be in secdownloader + its logging
 
@@ -25,7 +26,7 @@ class DataDownloadResult:
 class FileDownloadResult:
     """
     Result from FileDownload - contains raw file data or file path.
-    
+
     Note: This is a temporary implementation. In production, the file_path
     will be replaced with object store references (S3 key, Azure blob path, etc.)
     once the document store/object store SDK provider is decided.
@@ -42,3 +43,4 @@ class FileDownloadResult:
     duration_ms: int
     size_bytes: int                  # Size of raw downloaded bytes
     saved_to_disk: bool              # Whether the file was saved to disk
+    redirect_chain: list[str] = field(default_factory=list)  # URLs visited during redirects

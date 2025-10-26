@@ -18,8 +18,11 @@ Refer here instead of relying on the exports in `httpdl/__init__.py`.
   - Process-wide rate limiter (`AsyncRateLimiter`) configured with requested
     `requests_per_second`.
   - Per-host semaphores sized by `max_concurrency_per_host`.
+  - Redirect handling behavior via `follow_redirects` and `max_redirects`.
 - **Retry loop**: `_do_request_with_retry` wraps HTTP operations with exponential
   backoff, respect for `Retry-After`, and consistent exception mapping.
+- **Redirect handling**: `_follow_redirects` manually follows HTTP redirects (301,
+  302, 303, 307, 308) when enabled, tracking the full chain and detecting loops.
 - **Rate limiting**: `_apply_rate_limit` awaits the shared token bucket before
   any request is issued.
 
@@ -32,6 +35,8 @@ settings = DownloadSettings(
     max_concurrency_per_host=6,
     retry=RetryPolicy(attempts=3),
     timeouts=Timeouts(read=60.0),
+    follow_redirects=True,  # Enable redirect following (default)
+    max_redirects=20,       # Maximum redirect chain (default)
 )
 
 async with DataDownload(settings) as client:
@@ -55,10 +60,10 @@ async with DataDownload(settings) as client:
 
 1. Validate URL (`InvalidURLError` when blank).
 2. Apply rate limit and host semaphore.
-3. Execute request with retry loop.
+3. Execute request with retry loop and redirect handling.
 4. Decompress transfer encoding and enforce size limits.
 5. Classify and decode content.
-6. Populate `DataDownloadResult`.
+6. Populate `DataDownloadResult` (includes redirect chain).
 
 ### Usage
 
@@ -67,10 +72,21 @@ async with DataDownload() as client:
     result = await client.download("https://www.sec.gov/files/company_tickers.json")
     if result.kind == "json":
         data = json.loads(result.text)
+
+    # Check redirect chain
+    if result.redirect_chain:
+        print(f"URL was redirected: {' -> '.join(result.redirect_chain)}")
 ```
 
 `override_kind` lets callers force classification (useful for feeds with
 ambiguous headers).
+
+### Redirect Behavior
+
+- `DataDownload` inherits redirect handling from `BaseDownload`.
+- The `redirect_chain` field in results contains all intermediate URLs visited.
+- If `follow_redirects=False`, the initial response (even if 301/302) is returned.
+- Redirects are followed before any content processing begins.
 
 ## `FileDownload`
 

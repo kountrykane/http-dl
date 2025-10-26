@@ -77,7 +77,7 @@ class DataDownload(BaseDownload):
         start = time.perf_counter()
 
         async with sem:
-            resp = await self._do_request_with_retry("GET", url)
+            resp, redirect_chain = await self._do_request_with_retry("GET", url)
 
         duration_ms = int((time.perf_counter() - start) * 1000)
 
@@ -152,6 +152,7 @@ class DataDownload(BaseDownload):
             duration_ms=duration_ms,
             size_bytes=len(data),
             sniff_note=sniff_note,
+            redirect_chain=redirect_chain,
         )
 
         with contextlib.suppress(Exception):
@@ -315,6 +316,7 @@ class FileDownload(BaseDownload):
             duration_ms=duration_ms,
             size_bytes=size_bytes,
             saved_to_disk=saved_to_disk,
+            redirect_chain=[],  # Streaming mode doesn't track redirects currently
         )
 
         return result

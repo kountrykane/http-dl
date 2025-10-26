@@ -41,6 +41,10 @@ from .exceptions import (
     InternalServerError,
     BadGatewayError,
     ServiceUnavailableError,
+    # Redirect errors
+    RedirectError,
+    TooManyRedirectsError,
+    RedirectLoopError,
     # Content errors
     ContentError,
     DecompressionError,
@@ -104,6 +108,10 @@ __all__ = [
     "InternalServerError",
     "BadGatewayError",
     "ServiceUnavailableError",
+    # Redirect errors
+    "RedirectError",
+    "TooManyRedirectsError",
+    "RedirectLoopError",
     # Content errors
     "ContentError",
     "DecompressionError",

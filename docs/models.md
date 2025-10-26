@@ -37,6 +37,8 @@ Primary configuration object passed to `DataDownload` and `FileDownload`.
 | `requests_per_second` | `int` | `8` | Process-wide rate cap shared across all clients. |
 | `max_concurrency_per_host` | `int` | `6` | Per-host semaphore size. |
 | `http2` | `bool` | `False` | Enables HTTP/2 in httpx when target supports it. |
+| `follow_redirects` | `bool` | `True` | Enable automatic redirect following for 301, 302, 303, 307, 308 status codes. |
+| `max_redirects` | `int` | `20` | Maximum number of redirects to follow before raising `TooManyRedirectsError`. |
 | `retry` | `RetryPolicy` | new instance | Injects retry behavior. |
 | `timeouts` | `Timeouts` | new instance | Injects timeout behavior. |
 | `accept` | `str` | `"*/*"` | Default Accept header. |
@@ -66,6 +68,7 @@ Represents processed content returned by `DataDownload.download`.
 | `duration_ms` | `int` | Total wall-clock duration of the request. |
 | `size_bytes` | `int` | Size of the decompressed payload. |
 | `sniff_note` | `str | None` | Hints about classification/decoding decisions. |
+| `redirect_chain` | `list[str]` | List of URLs visited during redirect following (empty if no redirects). |
 
 `text` and `bytes_` are mutually exclusive. When `kind` is text-like, the
 client decodes to `text`; otherwise, the raw bytes are retained in `bytes_`.
@@ -86,6 +89,7 @@ Captures metadata for raw downloads performed by `FileDownload`.
 | `duration_ms` | `int` | Total download time. |
 | `size_bytes` | `int` | Total bytes written or buffered. |
 | `saved_to_disk` | `bool` | Indicates whether a file was persisted locally. |
+| `redirect_chain` | `list[str]` | List of URLs visited during redirect following (empty for streaming mode). |
 
 Future integrations (e.g., S3) can replace `file_path` with object-store
 identifiers while keeping the rest of the schema stable.

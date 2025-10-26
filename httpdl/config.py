@@ -27,6 +27,8 @@ class DownloadSettings:
     max_concurrency_per_host: int = 6
     # HTTP behavior
     http2: bool = False
+    follow_redirects: bool = True
+    max_redirects: int = 20
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     timeouts: Timeouts = field(default_factory=Timeouts)
     # default headers

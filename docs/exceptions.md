@@ -35,6 +35,9 @@ DownloadError
 │     ├─ InternalServerError
 │     ├─ BadGatewayError
 │     └─ ServiceUnavailableError
+├─ RedirectError
+│  ├─ TooManyRedirectsError
+│  └─ RedirectLoopError
 ├─ ContentError
 │  ├─ DecompressionError
 │  ├─ EncodingError
@@ -108,6 +111,24 @@ except RetryAttemptsExceeded as exc:
         metrics.increment("download.recoverable.server_error")
     else:
         metrics.increment("download.recoverable.other")
+```
+
+### Redirect Errors
+
+```python
+from httpdl import DataDownload, DownloadSettings
+from httpdl.exceptions import TooManyRedirectsError, RedirectLoopError
+
+settings = DownloadSettings(max_redirects=5)  # Stricter limit
+
+async with DataDownload(settings) as client:
+    try:
+        result = await client.download(url)
+    except TooManyRedirectsError as exc:
+        logger.warning(f"Too many redirects: {exc.redirect_chain}")
+        # Optionally retry with follow_redirects=False
+    except RedirectLoopError as exc:
+        logger.error(f"Redirect loop at {exc.loop_url}, chain: {exc.redirect_chain}")
 ```
 
 Use this guide to reference the hierarchy instead of re-exporting dozens of

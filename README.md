@@ -11,30 +11,34 @@ An asynchronous download toolkit for HTTP and SEC EDGAR workloads. The library w
 - **Global Throttling** - every client instance shares the same token bucket limiter, preventing accidental rate-limit violations.
 - **Typed Configuration Models** - `DownloadSettings`, `RetryPolicy`, and `Timeouts` provide predictable knobs for tuning throughput, retries, and headers.
 - **Download Modes** - `DataDownload` decodes and classifies content, whereas `FileDownload` streams raw bytes to disk or memory.
+- **Redirect Handling** - configurable redirect following with loop detection, chain tracking, and configurable limits (up to 20 redirects by default).
 - **Rich Exception Hierarchy** - 20+ purpose-built errors surface actionable metadata for metrics, retry loops, and logging.
 - **Async-first design** - built on `httpx.AsyncClient`, built to be thread-safe ready for high concurrency workloads.
-
-The project targets Python 3.11+. Dependencies are declared in `pyproject.toml`.
 
 ## Quickstart
 
 ### DataDownload Usage
 ```python
 import asyncio
-from httpdl import DataDownload, DownloadSettings
-from httpdl.models.config import RetryPolicy, Timeouts
+from httpdl import DataDownload, DownloadSettings, RetryPolicy, Timeouts
 
 settings = DownloadSettings(
     user_agent="MyApp/1.0 (ops@example.com)",
     requests_per_second=6,
     retry=RetryPolicy(attempts=3),
     timeouts=Timeouts(read=60.0),
+    follow_redirects=True,  # Enable redirect following (default: True)
+    max_redirects=20,       # Maximum redirect chain length (default: 20)
 )
 
 async def main() -> None:
     async with DataDownload(settings) as client:
         result = await client.download("https://www.sec.gov/files/company_tickers.json")
         print(result.kind, result.size_bytes)
+
+        # Check if URL was redirected
+        if result.redirect_chain:
+            print(f"Redirected through: {' -> '.join(result.redirect_chain)}")
 
 asyncio.run(main())
 ```
@@ -102,9 +106,19 @@ Supplementary documentation lives under `docs/`:
   encodings, classifies media types, and decodes to text where possible.
 - `FileDownload` streams raw responses to disk (or memory) without altering the
   payload.
-- Both clients inherit from `BaseDownload`, gaining retry logic, per-host
-  semaphores, and lifecycle management. A deeper walkthrough is in
-  [docs/download.md](docs/download.md).
+- Both clients inherit from `BaseDownload`, gaining retry logic, redirect
+  handling, per-host semaphores, and lifecycle management. A deeper walkthrough
+  is in [docs/download.md](docs/download.md).
+
+### Redirect Handling
+
+- Automatically follows HTTP redirects (301, 302, 303, 307, 308) when
+  `follow_redirects=True` (default).
+- Tracks the complete redirect chain in result objects (`redirect_chain` field).
+- Detects and prevents infinite redirect loops with `RedirectLoopError`.
+- Enforces configurable limits with `max_redirects` (default: 20).
+- Properly handles relative redirect URLs and HTTP method conversion (303 → GET).
+- Can be disabled by setting `follow_redirects=False` in `DownloadSettings`.
 
 ### Exceptions
 
