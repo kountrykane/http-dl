@@ -25,6 +25,12 @@ from .exceptions import (
     DecompressionError,
     classify_http_error,
 )
+from .logging import (
+    get_httpdl_logger,
+    log_content_processing,
+    log_exception,
+    HttpdlLoggerAdapter,
+)
 
 
 class DataDownload(BaseDownload):
@@ -64,10 +70,13 @@ class DataDownload(BaseDownload):
             NetworkError: For connection/timeout/DNS failures
         """
         if not url or not url.strip():
+            self._logger.error("download.invalid_url", url=url)
             raise InvalidURLError(
                 message="URL cannot be empty",
                 url=url,
             )
+
+        self._logger.debug("download.started", url=url, override_kind=override_kind)
 
         # global rate limit
         await self._apply_rate_limit()
@@ -83,14 +92,25 @@ class DataDownload(BaseDownload):
 
         # read body
         raw = await resp.aread()
+        self._logger.debug("download.body_read", url=url, raw_size_bytes=len(raw))
 
         # transfer decompression with structured error handling
         content_encoding = resp.headers.get("Content-Encoding")
         try:
             data = decompress_transfer(raw, content_encoding)
+            if content_encoding:
+                log_content_processing(
+                    self._logger,
+                    operation="decompress",
+                    content_type=resp.headers.get("Content-Type"),
+                    size_bytes=len(data),
+                    compression=content_encoding,
+                    url=url
+                )
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await resp.aclose()
+            log_exception(self._logger, exc, "download.decompression_failed", url=url, encoding=content_encoding)
             raise DecompressionError(
                 message=f"Failed to decompress response body: {exc}",
                 url=str(resp.request.url),
@@ -103,6 +123,12 @@ class DataDownload(BaseDownload):
         if len(data) > max_bytes:
             with contextlib.suppress(Exception):
                 await resp.aclose()
+            self._logger.error(
+                "download.payload_too_large",
+                url=url,
+                actual_size=len(data),
+                max_size=max_bytes
+            )
             raise PayloadSizeLimitError(
                 message="",  # Will be auto-generated
                 url=str(resp.request.url),
@@ -117,6 +143,17 @@ class DataDownload(BaseDownload):
         if override_kind:
             kind, sniff_note = override_kind, (sniff_note or "override_kind")
 
+        log_content_processing(
+            self._logger,
+            operation="classify",
+            content_type=content_type,
+            charset=charset,
+            size_bytes=len(data),
+            kind=kind,
+            sniff_note=sniff_note,
+            url=url
+        )
+
         text: Optional[str] = None
         bytes_: Optional[bytes] = None
 
@@ -124,6 +161,15 @@ class DataDownload(BaseDownload):
             text, note = decode_text(data, charset)
             if note:
                 sniff_note = f"{sniff_note}; {note}" if sniff_note else note
+            log_content_processing(
+                self._logger,
+                operation="decode",
+                content_type=content_type,
+                charset=charset,
+                size_bytes=len(text) if text else 0,
+                kind=kind,
+                url=url
+            )
         else:
             bytes_ = data
 
@@ -132,6 +178,12 @@ class DataDownload(BaseDownload):
             excerpt = (text or (bytes_[:512].decode("utf-8", "replace") if bytes_ else ""))[:512]
             with contextlib.suppress(Exception):
                 await resp.aclose()
+            self._logger.error(
+                "download.http_error",
+                url=url,
+                status_code=resp.status_code,
+                excerpt=excerpt[:100]
+            )
             # Use classify_http_error to create appropriate exception
             raise classify_http_error(
                 status_code=resp.status_code,
@@ -153,6 +205,16 @@ class DataDownload(BaseDownload):
             size_bytes=len(data),
             sniff_note=sniff_note,
             redirect_chain=redirect_chain,
+        )
+
+        self._logger.info(
+            "download.completed",
+            url=url,
+            status_code=resp.status_code,
+            kind=kind,
+            size_bytes=len(data),
+            duration_ms=duration_ms,
+            redirect_count=len(redirect_chain)
         )
 
         with contextlib.suppress(Exception):
@@ -195,6 +257,7 @@ class FileDownload(BaseDownload):
         self.download_dir = download_dir or Path("downloads")
         if self.download_dir:
             self.download_dir.mkdir(parents=True, exist_ok=True)
+            self._logger.debug("file_download.dir_initialized", download_dir=str(self.download_dir))
 
     async def download(
         self,
@@ -226,10 +289,13 @@ class FileDownload(BaseDownload):
         for object store uploads.
         """
         if not url or not url.strip():
+            self._logger.error("file_download.invalid_url", url=url)
             raise InvalidURLError(
                 message="URL cannot be empty",
                 url=url,
             )
+
+        self._logger.debug("file_download.started", url=url, stream_to_disk=stream_to_disk, save_path=str(save_path) if save_path else None)
 
         # Apply rate limiting
         await self._apply_rate_limit()
@@ -271,6 +337,7 @@ class FileDownload(BaseDownload):
 
                 # Stream to file using async file I/O
                 total_bytes = 0
+                self._logger.debug("file_download.streaming_to_disk", url=url, file_path=str(file_path))
                 async with self._client.stream("GET", url) as resp:
                     resp.raise_for_status()
                     headers_dict = dict(resp.headers)
@@ -284,9 +351,11 @@ class FileDownload(BaseDownload):
 
                 saved_to_disk = True
                 size_bytes = total_bytes
+                self._logger.debug("file_download.stream_completed", url=url, size_bytes=size_bytes, file_path=str(file_path))
 
             else:
                 # Load entire response into memory - preserve raw bytes
+                self._logger.debug("file_download.loading_to_memory", url=url)
                 async with self._client.stream("GET", url) as resp:
                     resp.raise_for_status()
                     headers_dict = dict(resp.headers)
@@ -299,6 +368,7 @@ class FileDownload(BaseDownload):
                         chunks.append(chunk)
                     bytes_ = b''.join(chunks)
                     size_bytes = len(bytes_)
+                self._logger.debug("file_download.memory_load_completed", url=url, size_bytes=size_bytes)
 
         duration_ms = int((time.perf_counter() - start) * 1000)
 
@@ -317,6 +387,15 @@ class FileDownload(BaseDownload):
             size_bytes=size_bytes,
             saved_to_disk=saved_to_disk,
             redirect_chain=[],  # Streaming mode doesn't track redirects currently
+        )
+
+        self._logger.info(
+            "file_download.completed",
+            url=url,
+            saved_to_disk=saved_to_disk,
+            size_bytes=size_bytes,
+            duration_ms=duration_ms,
+            content_type=content_type
         )
 
         return result

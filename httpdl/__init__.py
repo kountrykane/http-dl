@@ -1,14 +1,19 @@
 """
-SEC Download Package - Async Implementation
+HTTP-DL - Production-Ready HTTP Client
 
-This package provides async functionality for downloading SEC documents
-with rate limiting, retry logic, and proper content handling.
+An async HTTP client with enterprise features:
+- Multi-process rate limiting (Redis, multiprocessing, or in-memory)
+- HTTP/2 support enabled by default
+- Comprehensive metrics and monitoring
+- Batch download utilities with concurrency control
+- Automatic retries with exponential backoff
+- Structured exception hierarchy
 
-Two download modes are available:
+Two download modes available:
 - DataDownload: Processes and decodes content (text decoding, decompression, classification)
 - FileDownload: Downloads raw files without processing (preserves original encoding)
 
-All download operations are now async and must be awaited.
+All download operations are async and must be awaited.
 """
 
 from .download import DataDownload, FileDownload
@@ -65,6 +70,21 @@ from .utils import (
     decode_text,
     decompress_transfer,
 )
+from .metrics import (
+    MetricsCollector,
+    MetricsSnapshot,
+    RequestMetrics,
+    get_metrics_collector,
+    format_snapshot,
+)
+from .concurrency import (
+    download_batch,
+    download_files_batch,
+    map_concurrent,
+    retry_failed,
+    DownloadQueue,
+    BatchResult,
+)
 
 __all__ = [
     # Primary download classes
@@ -82,6 +102,21 @@ __all__ = [
 
     # Base class (for extending)
     "BaseDownload",
+
+    # Metrics and monitoring
+    "MetricsCollector",
+    "MetricsSnapshot",
+    "RequestMetrics",
+    "get_metrics_collector",
+    "format_snapshot",
+
+    # Concurrency utilities
+    "download_batch",
+    "download_files_batch",
+    "map_concurrent",
+    "retry_failed",
+    "DownloadQueue",
+    "BatchResult",
 
     # Base exceptions
     "DownloadError",

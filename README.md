@@ -1,157 +1,252 @@
 # http-dl
 
-An asynchronous download toolkit for HTTP and SEC EDGAR workloads. The library wraps `httpx` with process-wide rate limiting, resilient retry logic, and content-aware response handling so application code can focus on business logic instead of transport client concerns.The package offers two primary download modes:
+[![PyPI version](https://badge.fury.io/py/http-dl.svg)](https://badge.fury.io/py/http-dl)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-- **DataDownload**: Processes and decodes content (text decoding, decompression, classification)
-- **FileDownload**: Downloads raw files without processing (preserves the original encoding)
+**Production-ready async HTTP client for data-intensive workloads**
 
+Built for SEC EDGAR scraping and enterprise data pipelines, http-dl provides industrial-strength HTTP operations with multi-process rate limiting, HTTP/2 support, resumable downloads, and comprehensive observability.
 
 ## Features
 
-- **Global Throttling** - every client instance shares the same token bucket limiter, preventing accidental rate-limit violations.
-- **Typed Configuration Models** - `DownloadSettings`, `RetryPolicy`, and `Timeouts` provide predictable knobs for tuning throughput, retries, and headers.
-- **Download Modes** - `DataDownload` decodes and classifies content, whereas `FileDownload` streams raw bytes to disk or memory.
-- **Redirect Handling** - configurable redirect following with loop detection, chain tracking, and configurable limits (up to 20 redirects by default).
-- **Rich Exception Hierarchy** - 20+ purpose-built errors surface actionable metadata for metrics, retry loops, and logging.
-- **Async-first design** - built on `httpx.AsyncClient`, built to be thread-safe ready for high concurrency workloads.
+### 🚀 Performance & Scalability
+- **HTTP/2 by default** - Multiplexed connections, better TLS performance
+- **Multi-process rate limiting** - Redis or multiprocessing.Manager backends
+- **Optimized connection pooling** - 100 max connections, 20 keepalive
+- **Async-first** - Built on httpx.AsyncClient for high concurrency
 
-## Quickstart
+### 💪 Reliability
+- **Resumable downloads** - ETag validation, Range header support
+- **Checksum validation** - MD5, SHA256, SHA512 verification
+- **Automatic retries** - Exponential backoff with jitter
+- **Comprehensive exceptions** - 20+ typed errors for precise handling
 
-### DataDownload Usage
+### 📊 Observability
+- **Built-in metrics** - Request counts, latency percentiles, error rates
+- **Structured logging** - Dependency-injectable logger adapters
+- **Progress callbacks** - Real-time download progress tracking
+
+### 🛠️ Enterprise Features
+- **Session persistence** - Cookie jar management with disk storage
+- **Stealth mode** - User-Agent rotation, browser fingerprinting
+- **Batch operations** - Concurrent downloads with semaphore control
+- **Flexible backends** - In-memory, Redis, or multiprocessing
+
+## Installation
+
+```bash
+# Basic installation
+pip install http-dl
+
+# With Redis support for distributed rate limiting
+pip install 'http-dl[redis]'
+
+# All optional dependencies
+pip install 'http-dl[all]'
+```
+
+## Quick Start
+
+### Basic Usage
+
 ```python
 import asyncio
-from httpdl import DataDownload, DownloadSettings, RetryPolicy, Timeouts
+from httpdl import DataDownload, DownloadSettings
 
-settings = DownloadSettings(
-    user_agent="MyApp/1.0 (ops@example.com)",
-    requests_per_second=6,
-    retry=RetryPolicy(attempts=3),
-    timeouts=Timeouts(read=60.0),
-    follow_redirects=True,  # Enable redirect following (default: True)
-    max_redirects=20,       # Maximum redirect chain length (default: 20)
-)
+async def main():
+    settings = DownloadSettings(
+        user_agent="MyApp/1.0 (contact@example.com)",
+        requests_per_second=10,
+        http2=True,  # Enabled by default
+    )
 
-async def main() -> None:
     async with DataDownload(settings) as client:
         result = await client.download("https://www.sec.gov/files/company_tickers.json")
-        print(result.kind, result.size_bytes)
-
-        # Check if URL was redirected
-        if result.redirect_chain:
-            print(f"Redirected through: {' -> '.join(result.redirect_chain)}")
+        print(f"Downloaded {result.size_bytes} bytes")
+        print(f"Content type: {result.kind}")
 
 asyncio.run(main())
 ```
 
-### File Download Usage
+### Multi-Process Rate Limiting (Celery, multiprocessing)
 
 ```python
-import asyncio
+from httpdl import DataDownload, DownloadSettings
+
+# Redis backend (recommended for Celery workers)
+settings = DownloadSettings(
+    user_agent="DataPipeline/1.0",
+    requests_per_second=8,
+    rate_limit_backend="redis",
+    redis_url="redis://localhost:6379",
+    redis_key_prefix="sec:ratelimit"
+)
+
+# All workers now share the same rate limit
+async with DataDownload(settings) as client:
+    result = await client.download(url)
+```
+
+### Resumable Downloads with Checksum Validation
+
+```python
 from pathlib import Path
-from httpdl import FileDownload
+from httpdl.streaming import StreamingDownload
 
-async def main() -> None:
-    async with FileDownload(download_dir=Path("downloads")) as client:
-        filing = await client.download(
-            "https://www.sec.gov/Archives/edgar/data/1318605/000095017023001409/tsla-20221231.htm"
-        )
-        print("Saved:", filing.file_path, "bytes:", filing.size_bytes)
-
-asyncio.run(main())
+async with StreamingDownload() as client:
+    result = await client.download(
+        url="https://example.com/large-file.zip",
+        file_path=Path("downloads/file.zip"),
+        checksum_type="sha256",
+        expected_checksum="abc123...",
+        resume=True,  # Automatically resumes if interrupted
+        progress_callback=lambda curr, total: print(f"{curr}/{total}")
+    )
 ```
 
-## Architecture Overview
+### Batch Downloads
 
+```python
+from httpdl.concurrency import download_batch
+
+urls = [
+    "https://www.sec.gov/files/company_tickers.json",
+    "https://www.sec.gov/files/company_tickers_exchange.json",
+    # ... more URLs
+]
+
+result = await download_batch(
+    urls=urls,
+    max_concurrent=10,
+    on_success=lambda r: print(f"✓ {r.url}"),
+    on_error=lambda url, e: print(f"✗ {url}: {e}")
+)
+
+print(f"Success rate: {result.success_rate:.1f}%")
 ```
-httpdl/
-|-- __init__.py          # Export surface
-|-- core.py              # BaseDownload (lifecycle, retries, semaphores)
-|-- download.py          # DataDownload / FileDownload implementations
-|-- exceptions.py        # Exception hierarchy and helpers
-|-- limiting.py          # Process-wide token bucket limiter
-|-- utils.py             # Content sniffing / decoding helpers
-`-- models/
-    |-- config.py        # DownloadSettings, RetryPolicy, Timeouts
-    `-- result.py        # DataDownloadResult, FileDownloadResult
+
+### Metrics & Monitoring
+
+```python
+from httpdl.metrics import get_metrics_collector, format_snapshot
+
+collector = get_metrics_collector()
+
+# Make requests...
+async with DataDownload() as client:
+    for url in urls:
+        await client.download(url)
+
+# Get metrics snapshot
+snapshot = collector.get_snapshot()
+print(format_snapshot(snapshot))
+
+# Output:
+# === HTTP Metrics Snapshot ===
+# Total Requests: 1000
+#   Successful: 987
+#   Failed: 13
+#   Success Rate: 98.70%
 ```
 
-Supplementary documentation lives under `docs/`:
+### Stealth Mode (User-Agent Rotation)
 
-- [Download Clients](docs/download.md)
-- [Rate Limiting](docs/limiting.md)
-- [Exceptions](docs/exceptions.md)
-- [Models](docs/models.md)
+```python
+from httpdl.stealth import UserAgentRotator
 
-## Key Concepts
+rotator = UserAgentRotator(mode="desktop")
 
-### Rate Limiting
+settings = DownloadSettings(
+    user_agent=rotator.get_random_user_agent(),
+    rotate_user_agent=True
+)
 
-- A singleton `AsyncTokenBucket` enforces the strictest
-  `requests_per_second` requested by any `DownloadSettings`.
-- `BaseDownload._apply_rate_limit()` is called before every network request.
-- For tuning guidance and implementation details, see
-  [docs/limiting.md](docs/limiting.md).
+async with DataDownload(settings) as client:
+    result = await client.download(url)
+```
 
-### Configuration Models
+### Session Persistence
 
-- `DownloadSettings` aggregates HTTP headers, rate/concurrency controls, retry
-  behavior, timeouts, and safety limits.
-- Nested dataclasses (`RetryPolicy`, `Timeouts`) use `default_factory` to avoid
-  shared mutable state.
-- Field-by-field documentation is available in [docs/models.md](docs/models.md).
+```python
+from pathlib import Path
+from httpdl.session import SessionManager
 
-### Download Clients
+session_mgr = SessionManager(session_file=Path("session.json"))
 
-- `DataDownload` is optimized for structured content: it decompresses transfer
-  encodings, classifies media types, and decodes to text where possible.
-- `FileDownload` streams raw responses to disk (or memory) without altering the
-  payload.
-- Both clients inherit from `BaseDownload`, gaining retry logic, redirect
-  handling, per-host semaphores, and lifecycle management. A deeper walkthrough
-  is in [docs/download.md](docs/download.md).
+async with DataDownload() as client:
+    # Load saved session
+    await session_mgr.load_session(client._client)
 
-### Redirect Handling
+    # Make authenticated requests
+    await client.download("https://example.com/protected")
 
-- Automatically follows HTTP redirects (301, 302, 303, 307, 308) when
-  `follow_redirects=True` (default).
-- Tracks the complete redirect chain in result objects (`redirect_chain` field).
-- Detects and prevents infinite redirect loops with `RedirectLoopError`.
-- Enforces configurable limits with `max_redirects` (default: 20).
-- Properly handles relative redirect URLs and HTTP method conversion (303 → GET).
-- Can be disabled by setting `follow_redirects=False` in `DownloadSettings`.
+    # Save session for next run
+    await session_mgr.save_session(client._client)
+```
 
-### Exceptions
+## Documentation
 
-- All errors inherit from `DownloadError` so callers can both catch broadly and
-  target specific failure domains (validation, networking, HTTP status,
-  content, retry budget).
-- Utility helpers such as `retry_after_from_response` and
-  `classify_http_error` keep error handling consistent across the codebase.
-- Consult [docs/exceptions.md](docs/exceptions.md) for hierarchy diagrams and
-  recipes.
+- [Download Clients](docs/download.md) - DataDownload vs FileDownload
+- [Rate Limiting](docs/limiting.md) - Multi-process backends
+- [Streaming Downloads](docs/streaming.md) - Resumable downloads
+- [Metrics](docs/metrics.md) - Monitoring and observability
+- [Concurrency](docs/concurrency.md) - Batch operations
+- [Stealth Mode](docs/stealth.md) - User-Agent rotation
+- [Session Management](docs/session.md) - Cookie persistence
+- [Logging](docs/logging.md) - Structured logging
+- [Exceptions](docs/exceptions.md) - Error handling
+- [Models](docs/models.md) - Configuration and results
+
+## Migration from 0.1.x to 0.2.0
+
+### HTTP/2 Now Enabled by Default
+```python
+# Old (0.1.x): HTTP/2 disabled by default
+settings = DownloadSettings()  # http2=False
+
+# New (0.2.0): HTTP/2 enabled by default
+settings = DownloadSettings()  # http2=True
+
+# To disable HTTP/2:
+settings = DownloadSettings(http2=False)
+```
+
+### Multi-Process Rate Limiting
+```python
+# Old (0.1.x): Only in-memory rate limiting
+settings = DownloadSettings(requests_per_second=8)
+
+# New (0.2.0): Redis backend for distributed workers
+settings = DownloadSettings(
+    requests_per_second=8,
+    rate_limit_backend="redis",
+    redis_url="redis://localhost:6379"
+)
+```
 
 ## Testing
 
 ```bash
+# Run all tests
 pytest
+
+# Run with coverage
+pytest --cov=httpdl --cov-report=html
+
+# Run specific test file
+pytest tests/test_streaming.py
 ```
 
-Useful focused test cases:
+## License
 
-- `tests/test_data_download.py`
-- `tests/test_file_download.py`
-- `tests/test_rate_limiter.py`
-- `tests/test_exceptions.py`
+MIT License - see LICENSE file for details.
 
-## Roadmap
+## Credits
 
-- Object-store integration for `FileDownload` (S3, Azure Blob, ...)
-- Pluggable caching layer for frequently accessed filings
-- Download progress reporting hooks
+Built by [retnah](https://retnah.com) for production SEC EDGAR data pipelines.
 
-## Contributing
-
-- Open an issue describing the proposed change or bug fix.
-- Ensure new code paths include tests and, where applicable, documentation
-  updates under `docs/`.
-- Run `pytest` locally before opening a pull request.
+Powered by:
+- [httpx](https://www.python-httpx.org/) - HTTP/2 support
+- [aiofiles](https://github.com/Tinche/aiofiles) - Async file I/O
+- [redis](https://github.com/redis/redis-py) (optional) - Distributed rate limiting

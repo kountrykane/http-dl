@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -18,6 +19,7 @@ from .exceptions import (
     DNSResolutionError,
 )
 from .limiting import AsyncRateLimiter
+from .logging import get_httpdl_logger, log_retry, log_redirect, HttpdlLoggerAdapter
 
 
 class BaseDownload(ABC):
@@ -37,11 +39,64 @@ class BaseDownload(ABC):
     def __init__(self, settings: Optional[DownloadSettings] = None):
         self.settings = settings or DownloadSettings()
         self._client: Optional[httpx.AsyncClient] = None
+
+        # Initialize rate limiter with appropriate backend
+        backend = self._create_rate_limit_backend()
         self._limiter = AsyncRateLimiter(
             rate=self.settings.requests_per_second,
             capacity=self.settings.requests_per_second,
+            backend=backend,
         )
         self._host_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._logger = self.settings.logger or get_httpdl_logger(__name__)
+
+    def _create_rate_limit_backend(self):
+        """Create appropriate rate limiting backend based on settings."""
+        if self.settings.rate_limit_backend == "redis":
+            if self.settings.redis_url is None:
+                raise ValueError("redis_url must be provided when using redis backend")
+
+            try:
+                import redis.asyncio as aioredis
+            except ImportError:
+                raise ImportError(
+                    "redis backend requires 'redis' package. "
+                    "Install with: pip install 'http-dl[redis]'"
+                )
+
+            from .limiting_backends import RedisBackend
+
+            # Create Redis client
+            redis_client = aioredis.from_url(
+                self.settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+            )
+
+            backend = RedisBackend(
+                redis_client=redis_client,
+                key_prefix=self.settings.redis_key_prefix,
+            )
+
+            # Initialize Redis state
+            asyncio.create_task(backend.initialize(min(1.0, self.settings.requests_per_second)))
+
+            return backend
+
+        elif self.settings.rate_limit_backend == "multiprocess":
+            if self.settings.multiprocess_manager is None:
+                raise ValueError(
+                    "multiprocess_manager must be provided when using multiprocess backend"
+                )
+
+            from .limiting_backends import MultiprocessBackend
+
+            return MultiprocessBackend(self.settings.multiprocess_manager)
+
+        else:
+            # Default: in-memory backend
+            from .limiting_backends import InMemoryBackend
+            return InMemoryBackend()
 
     async def __aenter__(self) -> "BaseDownload":
         self._client = httpx.AsyncClient(
@@ -59,10 +114,18 @@ class BaseDownload(ABC):
             ),
             http2=self.settings.http2,
             limits=httpx.Limits(
-                max_keepalive_connections=100,
-                max_connections=100,
+                max_keepalive_connections=self.settings.max_keepalive_connections,
+                max_connections=self.settings.max_connections,
                 keepalive_expiry=self.settings.timeouts.pool,
             ),
+        )
+        self._logger.debug(
+            "client.initialized",
+            http2=self.settings.http2,
+            requests_per_second=self.settings.requests_per_second,
+            max_concurrency_per_host=self.settings.max_concurrency_per_host,
+            max_connections=self.settings.max_connections,
+            rate_limit_backend=self.settings.rate_limit_backend or "in-memory"
         )
         return self
 
@@ -70,6 +133,7 @@ class BaseDownload(ABC):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+            self._logger.debug("client.closed")
 
     def _sem_for_host(self, host: str) -> asyncio.Semaphore:
         """Get or create a semaphore for per-host concurrency control."""
@@ -117,6 +181,11 @@ class BaseDownload(ABC):
         last_response: Optional[httpx.Response] = None
         last_exception: Optional[BaseException] = None
 
+        request_start = time.time()
+        host = self._get_host_from_url(url)
+
+        self._logger.info("request.started", method=method, url=url, host=host)
+
         for attempt in range(rp.attempts + 1):
             try:
                 if stream:
@@ -136,6 +205,17 @@ class BaseDownload(ABC):
                 last_exception = exc
                 if attempt == rp.attempts:
                     parsed_url = httpx.URL(url)
+                    duration_ms = (time.time() - request_start) * 1000
+                    self._logger.error(
+                        "request.failed",
+                        method=method,
+                        url=url,
+                        host=host,
+                        error_type="connection_error",
+                        attempts=rp.attempts + 1,
+                        duration_ms=round(duration_ms, 2),
+                        exc_info=exc
+                    )
                     raise DownloadConnectionError(
                         message=f"Connection failed after {rp.attempts + 1} attempts",
                         url=url,
@@ -143,7 +223,17 @@ class BaseDownload(ABC):
                         port=parsed_url.port,
                         cause=exc,
                     ) from exc
-                await self._backoff(attempt)
+
+                delay_ms = await self._backoff(attempt)
+                log_retry(
+                    self._logger,
+                    attempt=attempt,
+                    max_attempts=rp.attempts,
+                    delay_ms=delay_ms,
+                    reason="connection_error",
+                    method=method,
+                    url=url
+                )
                 continue
             except httpx.TimeoutException as exc:
                 last_exception = exc
@@ -159,17 +249,50 @@ class BaseDownload(ABC):
                     elif "PoolTimeout" in type(exc).__name__:
                         timeout_type = "pool"
 
+                    duration_ms = (time.time() - request_start) * 1000
+                    self._logger.error(
+                        "request.failed",
+                        method=method,
+                        url=url,
+                        host=host,
+                        error_type="timeout",
+                        timeout_type=timeout_type,
+                        attempts=rp.attempts + 1,
+                        duration_ms=round(duration_ms, 2),
+                        exc_info=exc
+                    )
                     raise DownloadTimeoutError(
                         message=f"Request timed out after {rp.attempts + 1} attempts",
                         url=url,
                         timeout_type=timeout_type,
                         cause=exc,
                     ) from exc
-                await self._backoff(attempt)
+
+                delay_ms = await self._backoff(attempt)
+                log_retry(
+                    self._logger,
+                    attempt=attempt,
+                    max_attempts=rp.attempts,
+                    delay_ms=delay_ms,
+                    reason="timeout",
+                    method=method,
+                    url=url
+                )
                 continue
             except httpx.ConnectTimeout as exc:
                 last_exception = exc
                 if attempt == rp.attempts:
+                    duration_ms = (time.time() - request_start) * 1000
+                    self._logger.error(
+                        "request.failed",
+                        method=method,
+                        url=url,
+                        host=host,
+                        error_type="connect_timeout",
+                        attempts=rp.attempts + 1,
+                        duration_ms=round(duration_ms, 2),
+                        exc_info=exc
+                    )
                     raise DownloadTimeoutError(
                         message=f"Connection timed out after {rp.attempts + 1} attempts",
                         url=url,
@@ -177,7 +300,17 @@ class BaseDownload(ABC):
                         timeout_seconds=self.settings.timeouts.connect,
                         cause=exc,
                     ) from exc
-                await self._backoff(attempt)
+
+                delay_ms = await self._backoff(attempt)
+                log_retry(
+                    self._logger,
+                    attempt=attempt,
+                    max_attempts=rp.attempts,
+                    delay_ms=delay_ms,
+                    reason="connect_timeout",
+                    method=method,
+                    url=url
+                )
                 continue
             except Exception as exc:
                 last_exception = exc
@@ -185,23 +318,65 @@ class BaseDownload(ABC):
                 if "Name or service not known" in str(exc) or "getaddrinfo failed" in str(exc):
                     if attempt == rp.attempts:
                         parsed_url = httpx.URL(url)
+                        duration_ms = (time.time() - request_start) * 1000
+                        self._logger.error(
+                            "request.failed",
+                            method=method,
+                            url=url,
+                            host=host,
+                            error_type="dns_error",
+                            attempts=rp.attempts + 1,
+                            duration_ms=round(duration_ms, 2),
+                            exc_info=exc
+                        )
                         raise DNSResolutionError(
                             message=f"DNS resolution failed after {rp.attempts + 1} attempts",
                             url=url,
                             hostname=parsed_url.host,
                             cause=exc,
                         ) from exc
-                    await self._backoff(attempt)
+
+                    delay_ms = await self._backoff(attempt)
+                    log_retry(
+                        self._logger,
+                        attempt=attempt,
+                        max_attempts=rp.attempts,
+                        delay_ms=delay_ms,
+                        reason="dns_error",
+                        method=method,
+                        url=url
+                    )
                     continue
 
                 # Generic network error fallback
                 if attempt == rp.attempts:
+                    duration_ms = (time.time() - request_start) * 1000
+                    self._logger.error(
+                        "request.failed",
+                        method=method,
+                        url=url,
+                        host=host,
+                        error_type="network_error",
+                        attempts=rp.attempts + 1,
+                        duration_ms=round(duration_ms, 2),
+                        exc_info=exc
+                    )
                     raise NetworkError(
                         message=f"Request failed after {rp.attempts + 1} attempts: {exc}",
                         url=url,
                         cause=exc,
                     ) from exc
-                await self._backoff(attempt)
+
+                delay_ms = await self._backoff(attempt)
+                log_retry(
+                    self._logger,
+                    attempt=attempt,
+                    max_attempts=rp.attempts,
+                    delay_ms=delay_ms,
+                    reason="network_error",
+                    method=method,
+                    url=url
+                )
                 continue
 
             last_response = resp
@@ -212,6 +387,18 @@ class BaseDownload(ABC):
                 retry_delay = retry_after_from_response(resp)
                 await resp.aclose()
                 if attempt == rp.attempts:
+                    duration_ms = (time.time() - request_start) * 1000
+                    self._logger.error(
+                        "request.failed",
+                        method=method,
+                        url=url,
+                        host=host,
+                        error_type="rate_limit",
+                        status_code=status,
+                        retry_after=retry_delay,
+                        attempts=rp.attempts + 1,
+                        duration_ms=round(duration_ms, 2)
+                    )
                     raise RateLimitError(
                         message=f"Rate limit encountered after {rp.attempts + 1} attempts",
                         url=url,
@@ -219,16 +406,49 @@ class BaseDownload(ABC):
                         response=None,
                         status_code=status,
                     )
+
+                log_retry(
+                    self._logger,
+                    attempt=attempt,
+                    max_attempts=rp.attempts,
+                    delay_ms=retry_delay * 1000,
+                    reason=f"rate_limit_{status}",
+                    method=method,
+                    url=url,
+                    status_code=status
+                )
                 if retry_delay > 0:
                     await asyncio.sleep(retry_delay)
                 continue
 
             # Retry on 5xx server errors
             if status >= 500:
-                await self._backoff(attempt)
+                delay_ms = await self._backoff(attempt)
+                log_retry(
+                    self._logger,
+                    attempt=attempt,
+                    max_attempts=rp.attempts,
+                    delay_ms=delay_ms,
+                    reason=f"server_error_{status}",
+                    method=method,
+                    url=url,
+                    status_code=status
+                )
                 await resp.aclose()
                 continue
 
+            # Successful response
+            duration_ms = (time.time() - request_start) * 1000
+            self._logger.info(
+                "request.completed",
+                method=method,
+                url=url,
+                host=host,
+                status_code=status,
+                redirect_count=len(redirect_chain),
+                attempts=attempt + 1,
+                duration_ms=round(duration_ms, 2)
+            )
             return resp, redirect_chain
 
         # Exhausted all retries
@@ -241,14 +461,16 @@ class BaseDownload(ABC):
             cause=last_exception,
         )
 
-    async def _backoff(self, attempt: int) -> None:
-        """Exponential backoff with jitter."""
+    async def _backoff(self, attempt: int) -> float:
+        """Exponential backoff with jitter. Returns delay in milliseconds."""
         import random
 
         base = self.settings.retry.base_delay_ms / 1000.0
         delay = base * (attempt + 1)
         jitter = delay * (0.3 * (2 * random.random() - 1))  # +/-30%
-        await asyncio.sleep(max(0.05, delay + jitter))
+        final_delay = max(0.05, delay + jitter)
+        await asyncio.sleep(final_delay)
+        return final_delay * 1000  # Return milliseconds for logging
 
     async def _apply_rate_limit(self) -> None:
         """Apply global rate limiting."""
@@ -309,6 +531,13 @@ class BaseDownload(ABC):
 
             # Detect redirect loop
             if next_url in visited_urls:
+                self._logger.error(
+                    "redirect.loop_detected",
+                    from_url=current_url,
+                    to_url=next_url,
+                    redirect_count=len(redirect_chain),
+                    redirect_chain=redirect_chain
+                )
                 raise RedirectLoopError(
                     message=f"Redirect loop detected at URL: {next_url}",
                     url=url,
@@ -322,12 +551,27 @@ class BaseDownload(ABC):
 
             # Check if we've exceeded max redirects
             if redirect_count >= self.settings.max_redirects:
+                self._logger.error(
+                    "redirect.too_many",
+                    redirect_count=len(redirect_chain),
+                    max_redirects=self.settings.max_redirects,
+                    redirect_chain=redirect_chain
+                )
                 raise TooManyRedirectsError(
                     message=f"Too many redirects: {len(redirect_chain)} exceeds limit",
                     url=url,
                     max_redirects=self.settings.max_redirects,
                     redirect_chain=redirect_chain,
                 )
+
+            # Log the redirect
+            log_redirect(
+                self._logger,
+                from_url=current_url,
+                to_url=next_url,
+                status_code=resp.status_code,
+                redirect_count=len(redirect_chain)
+            )
 
             # Update method for 303 redirects (always use GET)
             if resp.status_code == 303:
