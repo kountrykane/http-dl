@@ -20,6 +20,7 @@ dependencies = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.1.0",
 ]
 
 [project.optional-dependencies]
@@ -84,6 +85,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "integration: marks tests that make real network requests (deselect with '-m \"not integration\"')",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "timeout: test timeout in seconds",
+]
 addopts = [
     "-v",
     "--strict-markers",

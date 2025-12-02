@@ -19,6 +19,9 @@ TEST_SEC_SMALL_FILE = "https://www.sec.gov/files/company_tickers.json"
 TEST_SEC_ZIP_FILE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2024q3.zip"
 TEST_SEC_ROBOTS = "https://www.sec.gov/robots.txt"
 
+# Mark for integration tests that make real network calls
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture
 def temp_download_dir(tmp_path):
@@ -44,7 +47,6 @@ def sample_checksum():
 class TestStreamingDownload:
     """Test StreamingDownload class."""
 
-    @pytest.mark.asyncio
     async def test_initialization(self):
         """Test StreamingDownload initializes correctly."""
         settings = DownloadSettings()
@@ -55,14 +57,14 @@ class TestStreamingDownload:
         assert "sha256" in client._checksums
         assert "sha512" in client._checksums
 
-    @pytest.mark.asyncio
     async def test_head_request_empty_url(self):
         """Test head_request raises InvalidURLError for empty URL."""
         async with StreamingDownload() as client:
             with pytest.raises(InvalidURLError):
                 await client.head_request("")
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
+    @pytest.mark.integration
     async def test_head_request_real_sec_url(self):
         """Test HEAD request with real SEC URL."""
         async with StreamingDownload() as client:
@@ -75,7 +77,6 @@ class TestStreamingDownload:
             # SEC usually returns text/plain for robots.txt
             assert "text" in metadata["content_type"].lower()
 
-    @pytest.mark.asyncio
     async def test_download_empty_url(self, temp_download_dir):
         """Test download raises InvalidURLError for empty URL."""
         async with StreamingDownload() as client:
@@ -85,7 +86,8 @@ class TestStreamingDownload:
                     file_path=temp_download_dir / "test.zip"
                 )
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
+    @pytest.mark.integration
     async def test_download_creates_parent_dirs_real_url(self, temp_download_dir):
         """Test download creates parent directories with real SEC URL."""
         nested_path = temp_download_dir / "nested" / "dir" / "robots.txt"
@@ -103,7 +105,8 @@ class TestStreamingDownload:
         assert result.size_bytes > 0
         assert nested_path.stat().st_size > 0
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
+    @pytest.mark.integration
     async def test_download_with_checksum_validation_real_url(self, temp_download_dir):
         """Test download with checksum validation using real SEC URL."""
         file_path = temp_download_dir / "robots.txt"
@@ -135,7 +138,8 @@ class TestStreamingDownload:
         assert result.checksum_type == "sha256"
         assert file_path.exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
+    @pytest.mark.integration
     async def test_download_checksum_mismatch(self, temp_download_dir):
         """Test download fails on checksum mismatch with real SEC URL."""
         file_path = temp_download_dir / "robots.txt"
@@ -153,7 +157,8 @@ class TestStreamingDownload:
         # File should be cleaned up on validation failure
         assert not file_path.exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
+    @pytest.mark.integration
     async def test_download_with_etag_save_real_url(self, temp_download_dir):
         """Test download saves ETag for future resume with real SEC URL."""
         file_path = temp_download_dir / "company_tickers.json"
@@ -174,7 +179,6 @@ class TestStreamingDownload:
         assert file_path.exists()
         assert result.size_bytes > 0
 
-    @pytest.mark.asyncio
     async def test_download_unsupported_checksum(self, temp_download_dir):
         """Test download raises error for unsupported checksum type."""
         file_path = temp_download_dir / "robots.txt"
@@ -187,7 +191,8 @@ class TestStreamingDownload:
                     checksum_type="invalid_algorithm"
                 )
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
+    @pytest.mark.integration
     async def test_progress_callback_real_url(self, temp_download_dir):
         """Test download calls progress callback with real SEC URL."""
         file_path = temp_download_dir / "robots.txt"
@@ -211,7 +216,9 @@ class TestStreamingDownload:
         assert last_call[1] == result.size_bytes  # Total bytes
         assert file_path.exists()
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(120)  # Large file needs more time
+    @pytest.mark.integration
+    @pytest.mark.slow
     async def test_download_large_zip_file(self, temp_download_dir):
         """Test downloading a large ZIP file from SEC."""
         file_path = temp_download_dir / "2024q3.zip"
@@ -233,7 +240,8 @@ class TestStreamingDownload:
 class TestDownloadWithRetry:
     """Test download_with_retry convenience function."""
 
-    @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
+    @pytest.mark.integration
     async def test_download_with_retry_success_real_url(self, temp_download_dir):
         """Test successful download with retry using real SEC URL."""
         file_path = temp_download_dir / "robots.txt"
@@ -249,7 +257,6 @@ class TestDownloadWithRetry:
         assert file_path.exists()
         assert result.file_path == file_path
 
-    @pytest.mark.asyncio
     async def test_download_with_retry_retries_on_failure(self, temp_download_dir):
         """Test download_with_retry retries on failure."""
         file_path = temp_download_dir / "file.txt"
@@ -284,7 +291,6 @@ class TestDownloadWithRetry:
         assert result.size_bytes == 100
         assert mock_client.download.call_count == 3
 
-    @pytest.mark.asyncio
     async def test_download_with_retry_max_retries_exceeded(self, temp_download_dir):
         """Test download_with_retry fails after max retries."""
         file_path = temp_download_dir / "file.txt"
