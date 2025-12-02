@@ -5,6 +5,11 @@ Test just the async rate limiter without network requests
 import asyncio
 import time
 
+import pytest
+
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from httpdl.limiting import AsyncTokenBucket
 
 """
@@ -18,6 +23,7 @@ you’d have to accept a busy wait or use a higher-resolution timer API,
 but for production throttling this behaviour is correct and healthy.
 """
 
+@pytest.mark.asyncio
 async def test_pure_rate_limiting() -> None:
     """Test rate limiting without network overhead"""
     limiter = AsyncTokenBucket(rate=2)  # 2 requests per second
@@ -31,7 +37,6 @@ async def test_pure_rate_limiting() -> None:
     start_time = time.time()
 
     for i in range(num_requests):
-        request_start = time.time()
 
         # This is where the rate limiting happens
         await limiter.wait()

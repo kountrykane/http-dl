@@ -16,6 +16,8 @@ import hashlib
 from pathlib import Path
 from typing import Optional, Callable, Awaitable
 from dataclasses import dataclass
+import inspect
+from collections.abc import Iterable
 
 import aiofiles
 import httpx
@@ -24,6 +26,36 @@ from .core import BaseDownload
 from .config import DownloadSettings
 from .exceptions import DownloadError, InvalidURLError
 from .logging import get_httpdl_logger
+
+
+async def _maybe_await(result):
+    """Await value if it is awaitable, otherwise return as-is."""
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def _ensure_async_iterator(candidate):
+    """
+    Convert various iterable/coroutine shapes into an async iterator.
+
+    Testing utilities often rely on AsyncMock or plain lists; this helper keeps
+    the production code resilient to those stubs while continuing to accept the
+    real httpx streaming interfaces.
+    """
+    if inspect.isawaitable(candidate):
+        candidate = await candidate
+
+    if hasattr(candidate, "__aiter__"):
+        return candidate
+
+    if isinstance(candidate, Iterable):
+        async def _generator():
+            for chunk in candidate:
+                yield chunk
+        return _generator()
+
+    raise TypeError("streaming response did not provide an async iterator")
 
 
 @dataclass
@@ -232,7 +264,7 @@ class StreamingDownload(BaseDownload):
             assert self._client is not None
 
             async with self._client.stream("GET", url, headers=headers) as resp:
-                resp.raise_for_status()
+                await _maybe_await(resp.raise_for_status())
 
                 # Verify range response
                 if resume_position > 0 and resp.status_code != 206:
@@ -244,7 +276,11 @@ class StreamingDownload(BaseDownload):
                 # Open file for writing (append if resuming)
                 mode = "ab" if resumed else "wb"
                 async with aiofiles.open(file_path, mode) as f:
-                    async for chunk in resp.aiter_bytes(chunk_size=chunk_size):
+                    byte_iterator = await _ensure_async_iterator(
+                        resp.aiter_bytes(chunk_size=chunk_size)
+                    )
+
+                    async for chunk in byte_iterator:
                         # Write chunk
                         await f.write(chunk)
                         current_bytes += len(chunk)

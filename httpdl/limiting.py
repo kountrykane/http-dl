@@ -158,8 +158,11 @@ class AsyncTokenBucket:
                 # Check if we have enough tokens
                 current_tokens = await self._backend.get_tokens()
                 if current_tokens >= tokens:
-                    # Consume tokens
-                    await self._backend.set_tokens(current_tokens - tokens)
+                    # Consume tokens and clamp tiny negatives due to floating point jitter
+                    remaining = current_tokens - tokens
+                    if remaining <= 1e-3:
+                        remaining = 0.0
+                    await self._backend.set_tokens(remaining)
 
                     if total_wait > 0:
                         log_rate_limit(

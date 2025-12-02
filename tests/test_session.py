@@ -124,7 +124,8 @@ class TestSessionManager:
         result = await manager.load_session(client)
 
         assert result is True
-        assert client.cookies.set.call_count == 2
+        assert client.cookies.get("session_id") == "abc123"
+        assert client.cookies.get("auth_token") == "xyz789"
 
     @pytest.mark.asyncio
     async def test_load_session_not_found(self, temp_session_file):
@@ -375,8 +376,7 @@ class TestSessionIntegration:
         result = await manager.load_session(load_client)
 
         assert result is True
-        # Verify cookie was restored
-        load_client.cookies.set.assert_called_once()
+        assert load_client.cookies.get("test_cookie") == "test_value"
 
     @pytest.mark.asyncio
     async def test_multiple_cookies_roundtrip(self, temp_session_file):
@@ -403,5 +403,7 @@ class TestSessionIntegration:
 
         await manager.load_session(load_client)
 
-        # Should have called set 3 times
-        assert load_client.cookies.set.call_count == 3
+        stored = extract_cookies_as_dict(load_client.cookies)
+        assert stored["cookie1"] == "value1"
+        assert stored["cookie2"] == "value2"
+        assert stored["cookie3"] == "value3"

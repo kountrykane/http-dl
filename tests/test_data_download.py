@@ -1,164 +1,120 @@
 """
-Test script for the async download package
+Unit tests for the DataDownload client.
+
+The original script in this module attempted to hit real SEC endpoints from the
+test-suite, which caused pytest to hang indefinitely.  These tests stub the
+network layer so we can focus on the transformation logic (decoding, kind
+classification, error surfacing) without performing live HTTP requests.
 """
 
-import asyncio
+from __future__ import annotations
+
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+
 from httpdl import DataDownload, DownloadSettings
+from httpdl.exceptions import NotFoundError
 
-async def test_basic_download():
-    """Test a basic download operation with DataDownload"""
-    settings = DownloadSettings(
-        requests_per_second=2,  # Slower rate for testing
-        max_concurrency_per_host=2,
-        follow_redirects=True,
+
+class DummyResponse:
+    """Minimal async response object compatible with DataDownload."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        content: bytes = b"",
+        url: str = "https://example.com/resource",
+    ) -> None:
+        self.status_code = status_code
+        self.headers = httpx.Headers(headers or {})
+        self._content = content
+        self.request = httpx.Request("GET", url)
+        self.closed = False
+
+    async def aread(self) -> bytes:
+        return self._content
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture(autouse=True)
+def disable_rate_limit(monkeypatch):
+    """Short-circuit the global rate limiter so tests run instantly."""
+
+    async def _noop(self):
+        return None
+
+    monkeypatch.setattr(DataDownload, "_apply_rate_limit", _noop)
+
+
+@pytest.fixture
+async def data_client():
+    """Yield a fully initialised DataDownload instance."""
+    async with DataDownload(DownloadSettings()) as client:
+        yield client
+
+
+@pytest.mark.asyncio
+async def test_download_decodes_text_payload(data_client):
+    response = DummyResponse(
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        content=b'{"message": "hello"}',
+    )
+    data_client._do_request_with_retry = AsyncMock(return_value=(response, []))
+
+    result = await data_client.download("https://example.com/data.json")
+
+    assert result.status_code == 200
+    assert result.text == '{"message": "hello"}'
+    assert result.bytes_ is None
+    assert result.kind == "json"
+
+
+@pytest.mark.asyncio
+async def test_download_returns_raw_bytes_for_binary_payload(data_client):
+    payload = b"\x00\x01binary-data"
+    response = DummyResponse(
+        headers={"Content-Type": "application/octet-stream"},
+        content=payload,
+    )
+    data_client._do_request_with_retry = AsyncMock(return_value=(response, []))
+
+    result = await data_client.download("https://example.com/file.bin")
+
+    assert result.text is None
+    assert result.bytes_ == payload
+    assert result.kind == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_download_override_kind_respected(data_client):
+    response = DummyResponse(
+        headers={"Content-Type": "text/html; charset=utf-8"},
+        content=b"<html><body>Hello</body></html>",
+    )
+    data_client._do_request_with_retry = AsyncMock(return_value=(response, []))
+
+    result = await data_client.download(
+        "https://example.com/override", override_kind="json"
     )
 
-    # Using the async context manager with DataDownload
-    async with DataDownload(settings) as client:
-        # Test downloading a simple file from SEC EDGAR
-        test_url = "https://www.sec.gov/Archives/edgar/data/1318605/000095017023001409/tsla-20221231.htm"
+    assert result.kind == "json"
+    assert "override_kind" in (result.sniff_note or "")
 
-        print("Testing async download...")
-        print(f"URL: {test_url}")
 
-        try:
-            # Await the async download call
-            result = await client.download(test_url)
-
-            print(f"\nDownload successful!")
-            print(f"Status Code: {result.status_code}")
-            print(f"Content Type: {result.content_type}")
-            print(f"Kind: {result.kind}")
-            print(f"Size: {result.size_bytes} bytes")
-            print(f"Duration: {result.duration_ms} ms")
-            print(f"Charset: {result.charset}")
-
-            # Check for redirects
-            if result.redirect_chain:
-                print(f"Redirects: {' -> '.join(result.redirect_chain)}")
-            else:
-                print("No redirects")
-
-            if result.text:
-                print(f"Text preview (first 200 chars): {result.text[:200]}...")
-            elif result.bytes_:
-                print(f"Binary data received: {len(result.bytes_)} bytes")
-
-        except Exception as e:
-            print(f"Error during download: {e}")
-
-async def test_multiple_downloads():
-    """Test multiple downloads to verify rate limiting"""
-    settings = DownloadSettings(
-        requests_per_second=2,  # 2 requests per second max
-        max_concurrency_per_host=2,
-        follow_redirects=True,
+@pytest.mark.asyncio
+async def test_download_raises_for_http_errors(data_client):
+    response = DummyResponse(
+        status_code=404,
+        headers={"Content-Type": "text/html; charset=utf-8"},
+        content=b"<html>missing</html>",
     )
+    data_client._do_request_with_retry = AsyncMock(return_value=(response, []))
 
-    async with DataDownload(settings) as client:
-        # Test URLs (using smaller files for speed)
-        test_urls = [
-            "https://www.sec.gov/files/company_tickers.json",
-            "https://www.sec.gov/Archives/edgar/data/789019/000156459021002316/msft-10k_20200630.htm",
-            "https://www.sec.gov/Archives/edgar/data/320193/000032019321000065/aapl-20210327.htm"
-        ]
-
-        print("\nTesting rate limiting with multiple downloads...")
-
-        import time
-        start_time = time.time()
-
-        for i, url in enumerate(test_urls, 1):
-            try:
-                print(f"\n[{i}] Downloading: {url.split('/')[-1]}")
-
-                download_start = time.time()
-                result = await client.download(url)
-                download_time = time.time() - download_start
-
-                print(f"    Status: {result.status_code}")
-                print(f"    Kind: {result.kind}")
-                print(f"    Size: {result.size_bytes} bytes")
-                print(f"    Download time: {download_time:.2f} seconds")
-
-                # Show redirect info
-                if result.redirect_chain:
-                    print(f"    Redirects: {len(result.redirect_chain)} hop(s)")
-
-            except Exception as e:
-                print(f"    Error: {e}")
-
-        total_time = time.time() - start_time
-        print(f"\nTotal time for {len(test_urls)} downloads: {total_time:.2f} seconds")
-        print(f"Average rate: {len(test_urls)/total_time:.2f} requests/second")
-        print("(Should be limited to ~2 requests/second)")
-
-async def test_error_handling():
-    """Test error handling with invalid URL"""
-    async with DataDownload() as client:
-        print("\nTesting error handling...")
-
-        # Test with non-existent URL
-        bad_url = "https://www.sec.gov/this-does-not-exist-404.html"
-
-        try:
-            result = await client.download(bad_url)
-            print(f"Unexpected success: {result.status_code}")
-        except Exception as e:
-            print(f"Expected error caught: {type(e).__name__}: {str(e)[:100]}...")
-
-
-async def test_redirect_handling():
-    """Test redirect handling"""
-    settings = DownloadSettings(
-        requests_per_second=2,
-        follow_redirects=True,
-        max_redirects=20,
-    )
-
-    async with DataDownload(settings) as client:
-        print("\nTesting redirect handling...")
-
-        # This URL often has redirects
-        test_url = "http://sec.gov/files/company_tickers.json"  # http -> https redirect
-
-        try:
-            result = await client.download(test_url)
-            print(f"Status: {result.status_code}")
-            print(f"Final URL: {result.url}")
-            if result.redirect_chain:
-                print(f"Redirect chain ({len(result.redirect_chain)} hops):")
-                for i, redirect_url in enumerate(result.redirect_chain, 1):
-                    print(f"  {i}. {redirect_url}")
-            else:
-                print("No redirects occurred")
-
-        except Exception as e:
-            print(f"Error: {type(e).__name__}: {e}")
-
-
-async def main():
-    """Main test runner"""
-    print("=" * 60)
-    print("DataDownload Test Suite")
-    print("=" * 60)
-
-    # Run basic test
-    await test_basic_download()
-
-    # Test rate limiting
-    await test_multiple_downloads()
-
-    # Test error handling
-    await test_error_handling()
-
-    # Test redirect handling
-    await test_redirect_handling()
-
-    print("\n" + "=" * 60)
-    print("All DataDownload tests completed!")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    with pytest.raises(NotFoundError):
+        await data_client.download("https://example.com/missing")

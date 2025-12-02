@@ -86,6 +86,13 @@ from .concurrency import (
     BatchResult,
 )
 
+from .streaming import (
+    StreamingDownload, 
+    download_with_retry, 
+    StreamingResult,
+)
+
+
 __all__ = [
     # Primary download classes
     "DataDownload",
@@ -166,4 +173,9 @@ __all__ = [
     "classify_kind",
     "decode_text",
     "decompress_transfer",
+
+    # Streaming Methods
+    "StreamingDownload", 
+    "download_with_retry", 
+    "StreamingResult",
 ]
