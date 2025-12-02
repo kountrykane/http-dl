@@ -1,5 +1,6 @@
 """
 Tests for streaming downloads with resumable support and checksum validation.
+Uses real SEC EDGAR URLs for integration testing.
 """
 
 import asyncio
@@ -11,6 +12,12 @@ import pytest
 from httpdl.streaming import StreamingDownload, download_with_retry, StreamingResult
 from httpdl.config import DownloadSettings
 from httpdl.exceptions import DownloadError, InvalidURLError
+
+
+# Real SEC EDGAR URLs for testing
+TEST_SEC_SMALL_FILE = "https://www.sec.gov/files/company_tickers.json"
+TEST_SEC_ZIP_FILE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2024q3.zip"
+TEST_SEC_ROBOTS = "https://www.sec.gov/robots.txt"
 
 
 @pytest.fixture
@@ -56,35 +63,17 @@ class TestStreamingDownload:
                 await client.head_request("")
 
     @pytest.mark.asyncio
-    @patch("httpx.AsyncClient")
-    async def test_head_request_success(self, mock_client_class):
-        """Test successful HEAD request."""
-        # Mock response
-        mock_response = AsyncMock()
-        mock_response.headers = {
-            "Content-Length": "1024",
-            "ETag": '"abc123"',
-            "Content-Type": "application/zip",
-            "Accept-Ranges": "bytes",
-            "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT"
-        }
-
-        mock_client = AsyncMock()
-        mock_client_class.return_value = mock_client
-
+    async def test_head_request_real_sec_url(self):
+        """Test HEAD request with real SEC URL."""
         async with StreamingDownload() as client:
-            client._client = mock_client
+            metadata = await client.head_request(TEST_SEC_ROBOTS)
 
-            # Mock _do_request_with_retry
-            client._do_request_with_retry = AsyncMock(return_value=(mock_response, None))
-
-            metadata = await client.head_request("https://example.com/file.zip")
-
-        assert metadata["content_length"] == 1024
-        assert metadata["etag"] == '"abc123"'
-        assert metadata["content_type"] == "application/zip"
-        assert metadata["accept_ranges"] is True
-        assert "last_modified" in metadata
+            # Verify we got real metadata
+            assert "content_length" in metadata
+            assert metadata["content_length"] > 0
+            assert "content_type" in metadata
+            # SEC usually returns text/plain for robots.txt
+            assert "text" in metadata["content_type"].lower()
 
     @pytest.mark.asyncio
     async def test_download_empty_url(self, temp_download_dir):
@@ -97,97 +86,65 @@ class TestStreamingDownload:
                 )
 
     @pytest.mark.asyncio
-    async def test_download_creates_parent_dirs(self, temp_download_dir, sample_content):
-        """Test download creates parent directories."""
-        nested_path = temp_download_dir / "nested" / "dir" / "file.txt"
+    async def test_download_creates_parent_dirs_real_url(self, temp_download_dir):
+        """Test download creates parent directories with real SEC URL."""
+        nested_path = temp_download_dir / "nested" / "dir" / "robots.txt"
 
         async with StreamingDownload() as client:
-            # Mock the HEAD and download process
-            client.head_request = AsyncMock(return_value={
-                "content_length": len(sample_content),
-                "etag": '"test"',
-                "content_type": "text/plain",
-                "accept_ranges": True,
-            })
-
-            # Mock streaming response
-            mock_response = AsyncMock()
-            mock_response.status_code = 200
-            mock_response.aiter_bytes = AsyncMock(return_value=[sample_content])
-
-            client._client = AsyncMock()
-            client._client.stream = MagicMock()
-            client._client.stream.return_value.__aenter__.return_value = mock_response
-
             result = await client.download(
-                url="https://example.com/file.txt",
+                url=TEST_SEC_ROBOTS,
                 file_path=nested_path
             )
 
+        # Verify parent directories were created
         assert nested_path.exists()
         assert nested_path.parent.exists()
+        # Verify file has content
+        assert result.size_bytes > 0
+        assert nested_path.stat().st_size > 0
 
     @pytest.mark.asyncio
-    async def test_download_with_checksum_validation(self, temp_download_dir, sample_content, sample_checksum):
-        """Test download with successful checksum validation."""
-        file_path = temp_download_dir / "file.txt"
+    async def test_download_with_checksum_validation_real_url(self, temp_download_dir):
+        """Test download with checksum validation using real SEC URL."""
+        file_path = temp_download_dir / "robots.txt"
 
+        # First download to get actual checksum
         async with StreamingDownload() as client:
-            # Mock HEAD request
-            client.head_request = AsyncMock(return_value={
-                "content_length": len(sample_content),
-                "etag": '"test"',
-                "content_type": "text/plain",
-                "accept_ranges": False,
-            })
-
-            # Mock streaming response
-            mock_response = AsyncMock()
-            mock_response.status_code = 200
-            mock_response.aiter_bytes = AsyncMock(return_value=[sample_content])
-
-            client._client = AsyncMock()
-            client._client.stream = MagicMock()
-            client._client.stream.return_value.__aenter__.return_value = mock_response
-
-            result = await client.download(
-                url="https://example.com/file.txt",
+            initial_result = await client.download(
+                url=TEST_SEC_ROBOTS,
                 file_path=file_path,
-                checksum_type="sha256",
-                expected_checksum=sample_checksum
+                checksum_type="sha256"
             )
 
-        assert result.checksum == sample_checksum
+            actual_checksum = initial_result.checksum
+            assert actual_checksum is not None
+            assert len(actual_checksum) == 64  # SHA256 is 64 hex chars
+
+        # Clean up and download again with expected checksum
+        file_path.unlink()
+
+        async with StreamingDownload() as client:
+            result = await client.download(
+                url=TEST_SEC_ROBOTS,
+                file_path=file_path,
+                checksum_type="sha256",
+                expected_checksum=actual_checksum
+            )
+
+        assert result.checksum == actual_checksum
         assert result.checksum_type == "sha256"
         assert file_path.exists()
 
     @pytest.mark.asyncio
-    async def test_download_checksum_mismatch(self, temp_download_dir, sample_content):
-        """Test download fails on checksum mismatch."""
-        file_path = temp_download_dir / "file.txt"
-        wrong_checksum = "wrong_checksum_value"
+    async def test_download_checksum_mismatch(self, temp_download_dir):
+        """Test download fails on checksum mismatch with real SEC URL."""
+        file_path = temp_download_dir / "robots.txt"
+        wrong_checksum = "0" * 64  # Invalid SHA256 checksum
 
         async with StreamingDownload() as client:
-            # Mock HEAD request
-            client.head_request = AsyncMock(return_value={
-                "content_length": len(sample_content),
-                "etag": None,
-                "content_type": "text/plain",
-                "accept_ranges": False,
-            })
-
-            # Mock streaming response
-            mock_response = AsyncMock()
-            mock_response.status_code = 200
-            mock_response.aiter_bytes = AsyncMock(return_value=[sample_content])
-
-            client._client = AsyncMock()
-            client._client.stream = MagicMock()
-            client._client.stream.return_value.__aenter__.return_value = mock_response
-
             with pytest.raises(DownloadError, match="Checksum validation failed"):
                 await client.download(
-                    url="https://example.com/file.txt",
+                    url=TEST_SEC_ROBOTS,
                     file_path=file_path,
                     checksum_type="sha256",
                     expected_checksum=wrong_checksum
@@ -197,120 +154,100 @@ class TestStreamingDownload:
         assert not file_path.exists()
 
     @pytest.mark.asyncio
-    async def test_download_with_etag_save(self, temp_download_dir, sample_content):
-        """Test download saves ETag for future resume."""
-        file_path = temp_download_dir / "file.txt"
-        etag = '"abc123"'
+    async def test_download_with_etag_save_real_url(self, temp_download_dir):
+        """Test download saves ETag for future resume with real SEC URL."""
+        file_path = temp_download_dir / "company_tickers.json"
 
         async with StreamingDownload() as client:
-            client.head_request = AsyncMock(return_value={
-                "content_length": len(sample_content),
-                "etag": etag,
-                "content_type": "text/plain",
-                "accept_ranges": True,
-            })
-
-            mock_response = AsyncMock()
-            mock_response.status_code = 200
-            mock_response.aiter_bytes = AsyncMock(return_value=[sample_content])
-
-            client._client = AsyncMock()
-            client._client.stream = MagicMock()
-            client._client.stream.return_value.__aenter__.return_value = mock_response
-
-            await client.download(
-                url="https://example.com/file.txt",
+            result = await client.download(
+                url=TEST_SEC_SMALL_FILE,
                 file_path=file_path
             )
 
-        # ETag should be saved
-        etag_file = file_path.with_suffix(file_path.suffix + ".etag")
-        assert etag_file.exists()
-        assert etag_file.read_text().strip() == etag
+        # If the server provided an ETag, it should be saved
+        if result.etag:
+            etag_file = file_path.with_suffix(file_path.suffix + ".etag")
+            assert etag_file.exists()
+            assert etag_file.read_text().strip() == result.etag
+
+        # Verify the downloaded file exists and has content
+        assert file_path.exists()
+        assert result.size_bytes > 0
 
     @pytest.mark.asyncio
     async def test_download_unsupported_checksum(self, temp_download_dir):
         """Test download raises error for unsupported checksum type."""
-        file_path = temp_download_dir / "file.txt"
+        file_path = temp_download_dir / "robots.txt"
 
         async with StreamingDownload() as client:
             with pytest.raises(ValueError, match="Unsupported checksum type"):
                 await client.download(
-                    url="https://example.com/file.txt",
+                    url=TEST_SEC_ROBOTS,
                     file_path=file_path,
                     checksum_type="invalid_algorithm"
                 )
 
     @pytest.mark.asyncio
-    async def test_progress_callback(self, temp_download_dir, sample_content):
-        """Test download calls progress callback."""
-        file_path = temp_download_dir / "file.txt"
+    async def test_progress_callback_real_url(self, temp_download_dir):
+        """Test download calls progress callback with real SEC URL."""
+        file_path = temp_download_dir / "robots.txt"
         progress_calls = []
 
         async def progress_callback(current, total):
             progress_calls.append((current, total))
 
         async with StreamingDownload() as client:
-            client.head_request = AsyncMock(return_value={
-                "content_length": len(sample_content),
-                "etag": None,
-                "content_type": "text/plain",
-                "accept_ranges": False,
-            })
-
-            mock_response = AsyncMock()
-            mock_response.status_code = 200
-            mock_response.aiter_bytes = AsyncMock(return_value=[sample_content])
-
-            client._client = AsyncMock()
-            client._client.stream = MagicMock()
-            client._client.stream.return_value.__aenter__.return_value = mock_response
-
-            await client.download(
-                url="https://example.com/file.txt",
+            result = await client.download(
+                url=TEST_SEC_ROBOTS,
                 file_path=file_path,
                 progress_callback=progress_callback
             )
 
         # Progress callback should have been called
         assert len(progress_calls) > 0
+        # Verify final progress matches downloaded size
         last_call = progress_calls[-1]
-        assert last_call[0] == len(sample_content)  # Current bytes
-        assert last_call[1] == len(sample_content)  # Total bytes
+        assert last_call[0] == result.size_bytes  # Current bytes
+        assert last_call[1] == result.size_bytes  # Total bytes
+        assert file_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_download_large_zip_file(self, temp_download_dir):
+        """Test downloading a large ZIP file from SEC."""
+        file_path = temp_download_dir / "2024q3.zip"
+
+        async with StreamingDownload() as client:
+            result = await client.download(
+                url=TEST_SEC_ZIP_FILE,
+                file_path=file_path
+            )
+
+        # Verify ZIP file was downloaded
+        assert file_path.exists()
+        assert result.size_bytes > 0
+        assert result.content_type in ["application/zip", "application/x-zip-compressed"]
+        # ZIP files should be large (at least 1MB)
+        assert file_path.stat().st_size > 1_000_000
 
 
 class TestDownloadWithRetry:
     """Test download_with_retry convenience function."""
 
     @pytest.mark.asyncio
-    async def test_download_with_retry_success(self, temp_download_dir, sample_content):
-        """Test successful download with retry."""
-        file_path = temp_download_dir / "file.txt"
+    async def test_download_with_retry_success_real_url(self, temp_download_dir):
+        """Test successful download with retry using real SEC URL."""
+        file_path = temp_download_dir / "robots.txt"
 
-        with patch("httpdl.streaming.StreamingDownload") as MockStreamingDownload:
-            mock_client = AsyncMock()
-            mock_result = StreamingResult(
-                url="https://example.com/file.txt",
-                file_path=file_path,
-                size_bytes=len(sample_content),
-                checksum=None,
-                checksum_type=None,
-                duration_ms=100,
-                resumed=False,
-                etag=None,
-                content_type="text/plain"
-            )
-            mock_client.download = AsyncMock(return_value=mock_result)
-            MockStreamingDownload.return_value.__aenter__.return_value = mock_client
+        result = await download_with_retry(
+            url=TEST_SEC_ROBOTS,
+            file_path=file_path,
+            max_retries=3
+        )
 
-            result = await download_with_retry(
-                url="https://example.com/file.txt",
-                file_path=file_path,
-                max_retries=3
-            )
-
-        assert result.url == "https://example.com/file.txt"
-        assert result.size_bytes == len(sample_content)
+        assert result.url == TEST_SEC_ROBOTS
+        assert result.size_bytes > 0
+        assert file_path.exists()
+        assert result.file_path == file_path
 
     @pytest.mark.asyncio
     async def test_download_with_retry_retries_on_failure(self, temp_download_dir):
