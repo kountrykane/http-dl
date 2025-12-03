@@ -423,7 +423,7 @@ class TestBatchDownloads:
 
         result = await file_client.download_batch(urls, max_concurrent=2)
 
-        assert isinstance(result, BatchResult)
+        assert isinstance(result, BatchDownloadResult)
         assert len(result.successful) == 3
         assert len(result.failed) == 0
         assert result.success_rate == 100.0

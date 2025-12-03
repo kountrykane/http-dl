@@ -6,6 +6,8 @@ import pytest
 from httpdl.stealth.stealth import (
     UserAgentRotator,
     BrowserProfile,
+    HeaderRotator,
+    get_random_headers,
     DESKTOP_USER_AGENTS,
     MOBILE_USER_AGENTS,
     BOT_USER_AGENTS,

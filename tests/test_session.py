@@ -10,7 +10,12 @@ from datetime import datetime
 
 import httpx
 
-from httpdl.session.manager import SessionManager
+from httpdl.session.manager import (
+    SessionManager,
+    SessionDownload,
+    create_cookie_jar_from_dict,
+    extract_cookies_as_dict,
+)
 from httpdl import DownloadSettings
 
 

@@ -12,6 +12,7 @@ from httpdl.observability.metrics import (
     MetricsSnapshot,
     get_metrics_collector,
     format_snapshot,
+    reset_metrics_collector,
 )
 
 

@@ -17,9 +17,10 @@ import time
 from typing import Optional, TYPE_CHECKING
 
 from ..observability.logging import get_httpdl_logger, log_rate_limit
+from .backends import InMemoryBackend
 
 if TYPE_CHECKING:
-    from .backends import BaseLimiterBackend, InMemoryBackend
+    from .backends import BaseLimiterBackend
 
 
 class AsyncTokenBucket:

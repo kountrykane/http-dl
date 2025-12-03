@@ -255,7 +255,7 @@ class TestBatchDownloads:
 
         result = await data_client.download_batch(urls, max_concurrent=2)
 
-        assert isinstance(result, BatchResult)
+        assert isinstance(result, BatchDownloadResult)
         assert len(result.successful) == 3
         assert len(result.failed) == 0
         assert result.success_rate == 100.0
@@ -391,5 +391,5 @@ class TestMetadataCapture:
         result = await data_client.download("https://example.com/data.json")
 
         assert result.size_bytes == len(content)
-        assert result.duration_ms > 0
+        assert result.duration_ms >= 0  # Can be 0 for very fast mocked responses
         assert result.content_type == "application/json"

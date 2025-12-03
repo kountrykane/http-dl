@@ -1,5 +1,6 @@
-from .limiting import AsyncRateLimiter
+from .limiting import AsyncRateLimiter, AsyncTokenBucket
 
 __all__ = [
-    "AsyncRateLimiter"
+    "AsyncRateLimiter",
+    "AsyncTokenBucket"
 ]
