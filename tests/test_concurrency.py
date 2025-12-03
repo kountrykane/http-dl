@@ -1,58 +1,53 @@
 """
-Tests for batch download operations - BatchDownload and DownloadQueue.
+Tests for BatchDownload and DownloadQueue classes.
 """
 
 import asyncio
-import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from httpdl import BatchDownload, DownloadQueue, DownloadSettings
-from httpdl.models.results import DataDownloadResult, FileDownloadResult, BatchDownloadResult
 from httpdl.exceptions import DownloadError
+from httpdl.models.results import BatchDownloadResult, DataDownloadResult, FileDownloadResult
 
 
 @pytest.fixture
 def sample_data_result():
-    """Sample DataDownloadResult."""
+    """Sample DataDownloadResult used across tests."""
     return DataDownloadResult(
         url="https://example.com/data",
         text="Sample content",
-        size_bytes=100,
-        kind="text/plain",
-        duration_ms=50,
+        size_bytes=128,
+        kind="json",
+        duration_ms=42,
     )
 
 
 @pytest.fixture
-def sample_file_result(tmp_path):
-    """Sample FileDownloadResult."""
-    file_path = tmp_path / "test.txt"
+def sample_file_result(tmp_path: Path):
+    """Sample FileDownloadResult with a real file on disk."""
+    file_path = tmp_path / "example.txt"
     file_path.write_text("content")
     return FileDownloadResult(
-        url="https://example.com/file",
+        url="https://example.com/file.txt",
         file_path=file_path,
-        size_bytes=100,
-        kind="text/plain",
+        size_bytes=file_path.stat().st_size,
         duration_ms=50,
+        saved_to_disk=True,
     )
 
 
-class TestBatchResult:
-    """Test BatchResult dataclass."""
+class TestBatchDownloadResult:
+    """Behavioural tests for BatchDownloadResult helper."""
 
     def test_success_rate_all_successful(self):
-        """Test success_rate with all successful downloads."""
-        result = BatchResult(
-            successful=[1, 2, 3, 4, 5],
-            failed=[],
-            total=5,
-        )
+        result = BatchDownloadResult(successful=[1, 2, 3], failed=[], total=3)
         assert result.success_rate == 100.0
 
     def test_success_rate_all_failed(self):
-        """Test success_rate with all failed downloads."""
-        result = BatchResult(
+        result = BatchDownloadResult(
             successful=[],
             failed=[("url1", Exception()), ("url2", Exception())],
             total=2,
@@ -60,399 +55,260 @@ class TestBatchResult:
         assert result.success_rate == 0.0
 
     def test_success_rate_mixed(self):
-        """Test success_rate with mixed results."""
-        result = BatchResult(
-            successful=[1, 2, 3],
-            failed=[("url1", Exception()), ("url2", Exception())],
-            total=5,
+        result = BatchDownloadResult(
+            successful=[1, 2],
+            failed=[("url3", Exception())],
+            total=3,
         )
-        assert result.success_rate == 60.0
+        assert result.success_rate == pytest.approx(66.666, rel=1e-3)
 
-    def test_success_rate_empty(self):
-        """Test success_rate with no downloads."""
-        result = BatchResult(
-            successful=[],
-            failed=[],
-            total=0,
-        )
+    def test_success_rate_empty_total(self):
+        result = BatchDownloadResult(successful=[], failed=[], total=0)
         assert result.success_rate == 0.0
 
 
-class TestDownloadBatch:
-    """Test download_batch function."""
+class TestBatchDownloadData:
+    """Tests for BatchDownload when download_type='data'."""
 
     @pytest.mark.asyncio
-    async def test_download_batch_success(self, sample_data_result):
-        """Test download_batch with all successful downloads."""
-        urls = [f"https://example.com/{i}" for i in range(5)]
-
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
-            mock_client = AsyncMock()
-            mock_client.download = AsyncMock(return_value=sample_data_result)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
-
-            result = await download_batch(urls, max_concurrent=3)
-
-        assert len(result.successful) == 5
-        assert len(result.failed) == 0
-        assert result.total == 5
-        assert result.success_rate == 100.0
-
-    @pytest.mark.asyncio
-    async def test_download_batch_with_failures(self, sample_data_result):
-        """Test download_batch with some failures."""
-        urls = [f"https://example.com/{i}" for i in range(5)]
-
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
-            mock_client = AsyncMock()
-
-            # Fail on URLs 2 and 4
-            def download_side_effect(url):
-                if "2" in url or "4" in url:
-                    raise DownloadError(f"Failed {url}")
-                return sample_data_result
-
-            mock_client.download = AsyncMock(side_effect=download_side_effect)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
-
-            result = await download_batch(urls, max_concurrent=3)
-
-        assert len(result.successful) == 3
-        assert len(result.failed) == 2
-        assert result.total == 5
-        assert result.success_rate == 60.0
-
-    @pytest.mark.asyncio
-    async def test_download_batch_callbacks(self, sample_data_result):
-        """Test download_batch with success and error callbacks."""
+    async def test_download_success(self, sample_data_result):
         urls = [f"https://example.com/{i}" for i in range(3)]
-        success_calls = []
-        error_calls = []
+        fake_result = BatchDownloadResult(
+            successful=[sample_data_result] * 3,
+            failed=[],
+            total=3,
+        )
+
+        with patch("httpdl.clients.batch.DataDownload") as MockDataDownload:
+            mock_client = AsyncMock()
+            mock_client.download_batch = AsyncMock(return_value=fake_result)
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            batch = BatchDownload(download_type="data", max_concurrent=5)
+            result = await batch.download(urls)
+
+        MockDataDownload.assert_called_once_with(None)
+        mock_client.download_batch.assert_awaited_once_with(
+            urls=urls,
+            max_concurrent=5,
+            on_success=None,
+            on_error=None,
+            return_exceptions=True,
+        )
+        assert result is fake_result
+
+    @pytest.mark.asyncio
+    async def test_download_uses_provided_settings(self, sample_data_result):
+        urls = ["https://example.com/a"]
+        fake_result = BatchDownloadResult(successful=[sample_data_result], failed=[], total=1)
+        settings = DownloadSettings(requests_per_second=5)
+
+        with patch("httpdl.clients.batch.DataDownload") as MockDataDownload:
+            mock_client = AsyncMock()
+            mock_client.download_batch = AsyncMock(return_value=fake_result)
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            batch = BatchDownload(download_type="data", settings=settings, max_concurrent=2)
+            await batch.download(urls)
+
+        MockDataDownload.assert_called_once_with(settings)
+
+    @pytest.mark.asyncio
+    async def test_download_passes_callbacks(self, sample_data_result):
+        urls = ["https://example.com/success", "https://example.com/error"]
+        successes, errors = [], []
 
         async def on_success(result):
-            success_calls.append(result)
+            successes.append(result.url)
 
-        async def on_error(url, error):
-            error_calls.append((url, error))
+        async def on_error(url, exc):
+            errors.append((url, str(exc)))
 
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
+        async def fake_download_batch(**kwargs):
+            await kwargs["on_success"](sample_data_result)
+            await kwargs["on_error"]("https://example.com/error", DownloadError("boom"))
+            return BatchDownloadResult(
+                successful=[sample_data_result],
+                failed=[("https://example.com/error", DownloadError("boom"))],
+                total=2,
+            )
+
+        with patch("httpdl.clients.batch.DataDownload") as MockDataDownload:
             mock_client = AsyncMock()
+            mock_client.download_batch = AsyncMock(side_effect=fake_download_batch)
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            def download_side_effect(url):
-                if "2" in url:
-                    raise DownloadError(f"Failed {url}")
-                return sample_data_result
-
-            mock_client.download = AsyncMock(side_effect=download_side_effect)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
-
-            result = await download_batch(
+            batch = BatchDownload(download_type="data", max_concurrent=2)
+            await batch.download(
                 urls,
-                max_concurrent=2,
                 on_success=on_success,
                 on_error=on_error,
             )
 
-        assert len(success_calls) == 2
-        assert len(error_calls) == 1
+        assert successes == [sample_data_result.url]
+        assert errors == [("https://example.com/error", "boom")]
 
     @pytest.mark.asyncio
-    async def test_download_batch_return_exceptions_false(self, sample_data_result):
-        """Test download_batch with return_exceptions=False."""
-        urls = [f"https://example.com/{i}" for i in range(3)]
+    async def test_download_propagates_errors(self):
+        urls = ["https://example.com/fail"]
 
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
+        with patch("httpdl.clients.batch.DataDownload") as MockDataDownload:
             mock_client = AsyncMock()
+            mock_client.download_batch = AsyncMock(side_effect=DownloadError("nope"))
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            def download_side_effect(url):
-                if "1" in url:
-                    raise DownloadError("Test error")
-                return sample_data_result
-
-            mock_client.download = AsyncMock(side_effect=download_side_effect)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
+            batch = BatchDownload(download_type="data")
 
             with pytest.raises(DownloadError):
-                await download_batch(
-                    urls,
-                    max_concurrent=2,
-                    return_exceptions=False,
-                )
+                await batch.download(urls)
 
 
-class TestDownloadFilesBatch:
-    """Test download_files_batch function."""
+class TestBatchDownloadFile:
+    """Tests for BatchDownload when download_type='file'."""
 
     @pytest.mark.asyncio
-    async def test_download_files_batch_success(self, sample_file_result):
-        """Test download_files_batch with successful downloads."""
-        urls = [f"https://example.com/file{i}.txt" for i in range(3)]
-
-        with patch("httpdl.concurrency.FileDownload") as MockFileDownload:
-            mock_client = AsyncMock()
-            mock_client.download = AsyncMock(return_value=sample_file_result)
-            MockFileDownload.return_value.__aenter__.return_value = mock_client
-
-            result = await download_files_batch(urls, max_concurrent=2)
-
-        assert len(result.successful) == 3
-        assert len(result.failed) == 0
-        assert result.success_rate == 100.0
-
-    @pytest.mark.asyncio
-    async def test_download_files_batch_with_callback(self, sample_file_result):
-        """Test download_files_batch with success callback."""
+    async def test_file_download_success(self, sample_file_result):
         urls = [f"https://example.com/file{i}.txt" for i in range(2)]
-        callback_calls = []
+        fake_result = BatchDownloadResult(
+            successful=[sample_file_result] * 2,
+            failed=[],
+            total=2,
+        )
 
-        async def on_success(result):
-            callback_calls.append(result)
-
-        with patch("httpdl.concurrency.FileDownload") as MockFileDownload:
+        with patch("httpdl.clients.batch.FileDownload") as MockFileDownload:
             mock_client = AsyncMock()
-            mock_client.download = AsyncMock(return_value=sample_file_result)
-            MockFileDownload.return_value.__aenter__.return_value = mock_client
+            mock_client.download_batch = AsyncMock(return_value=fake_result)
+            MockFileDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockFileDownload.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            result = await download_files_batch(
-                urls,
-                max_concurrent=2,
-                on_success=on_success,
-            )
+            batch = BatchDownload(download_type="file", max_concurrent=3)
+            result = await batch.download(urls, resume=True)
 
-        assert len(callback_calls) == 2
+        MockFileDownload.assert_called_once_with(None)
+        mock_client.download_batch.assert_awaited_once()
+        assert result is fake_result
 
-
-class TestMapConcurrent:
-    """Test map_concurrent function."""
-
-    @pytest.mark.asyncio
-    async def test_map_concurrent_success(self):
-        """Test map_concurrent with successful operations."""
-        async def multiply_by_two(x):
-            await asyncio.sleep(0.01)
-            return x * 2
-
-        items = [1, 2, 3, 4, 5]
-        results = await map_concurrent(items, multiply_by_two, max_concurrent=3)
-
-        assert results == [2, 4, 6, 8, 10]
-
-    @pytest.mark.asyncio
-    async def test_map_concurrent_with_exceptions(self):
-        """Test map_concurrent with some exceptions."""
-        async def process(x):
-            await asyncio.sleep(0.01)
-            if x == 3:
-                raise ValueError(f"Error for {x}")
-            return x * 2
-
-        items = [1, 2, 3, 4, 5]
-        results = await map_concurrent(items, process, max_concurrent=3)
-
-        assert len(results) == 5
-        assert results[0] == 2
-        assert results[1] == 4
-        assert isinstance(results[2], ValueError)
-        assert results[3] == 8
-        assert results[4] == 10
-
-    @pytest.mark.asyncio
-    async def test_map_concurrent_order_preserved(self):
-        """Test map_concurrent preserves input order."""
-        async def slow_for_odd(x):
-            if x % 2 == 1:
-                await asyncio.sleep(0.05)
-            else:
-                await asyncio.sleep(0.01)
-            return x
-
-        items = [1, 2, 3, 4, 5]
-        results = await map_concurrent(items, slow_for_odd, max_concurrent=5)
-
-        assert results == items
-
-
-class TestRetryFailed:
-    """Test retry_failed function."""
-
-    @pytest.mark.asyncio
-    async def test_retry_failed_all_succeed(self, sample_data_result):
-        """Test retry_failed when all retries succeed."""
-        failed = [
-            ("https://example.com/1", DownloadError("Temp error")),
-            ("https://example.com/2", DownloadError("Temp error")),
-        ]
-
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
-            mock_client = AsyncMock()
-            mock_client.download = AsyncMock(return_value=sample_data_result)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
-
-            result = await retry_failed(failed, max_retries=3, max_concurrent=2)
-
-        assert len(result.successful) == 2
-        assert len(result.failed) == 0
-        assert result.success_rate == 100.0
-
-    @pytest.mark.asyncio
-    async def test_retry_failed_all_fail(self):
-        """Test retry_failed when all retries fail."""
-        failed = [
-            ("https://example.com/1", DownloadError("Permanent error")),
-            ("https://example.com/2", DownloadError("Permanent error")),
-        ]
-
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
-            mock_client = AsyncMock()
-            mock_client.download = AsyncMock(side_effect=DownloadError("Still failing"))
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
-
-            result = await retry_failed(failed, max_retries=2, max_concurrent=2)
-
-        assert len(result.successful) == 0
-        assert len(result.failed) == 2
-        assert result.success_rate == 0.0
-
-    @pytest.mark.asyncio
-    async def test_retry_failed_succeed_on_second_attempt(self, sample_data_result):
-        """Test retry_failed succeeds on second attempt."""
-        failed = [("https://example.com/1", DownloadError("Temp error"))]
-
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
-            mock_client = AsyncMock()
-
-            # Fail once, then succeed
-            mock_client.download = AsyncMock(
-                side_effect=[DownloadError("Try 1"), sample_data_result]
-            )
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
-
-            result = await retry_failed(failed, max_retries=3, max_concurrent=1)
-
-        assert len(result.successful) == 1
-        assert len(result.failed) == 0
-
-    @pytest.mark.asyncio
-    async def test_retry_failed_exponential_backoff(self, sample_data_result):
-        """Test retry_failed uses exponential backoff."""
-        failed = [("https://example.com/1", DownloadError("Error"))]
-
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
-            mock_client = AsyncMock()
-
-            # Fail twice, succeed on third
-            mock_client.download = AsyncMock(
-                side_effect=[
-                    DownloadError("Try 1"),
-                    DownloadError("Try 2"),
-                    sample_data_result,
-                ]
-            )
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
-
-            with patch("asyncio.sleep") as mock_sleep:
-                result = await retry_failed(failed, max_retries=3, max_concurrent=1)
-
-                # Check exponential backoff was used
-                assert mock_sleep.call_count == 2
-                # First backoff: 2^0 = 1 second
-                # Second backoff: 2^1 = 2 seconds
+    def test_invalid_download_type(self):
+        with pytest.raises(ValueError):
+            BatchDownload(download_type="unknown")
 
 
 class TestDownloadQueue:
-    """Test DownloadQueue class."""
+    """Integration-style tests for DownloadQueue."""
 
     @pytest.mark.asyncio
-    async def test_download_queue_basic(self, sample_data_result):
-        """Test basic DownloadQueue usage."""
-        queue = DownloadQueue(max_concurrent=2)
+    async def test_queue_processes_all_urls(self, sample_data_result):
+        queue = DownloadQueue(max_concurrent=2, download_type="data")
         urls = [f"https://example.com/{i}" for i in range(3)]
 
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
+        with patch("httpdl.clients.queue.DataDownload") as MockDataDownload:
             mock_client = AsyncMock()
             mock_client.download = AsyncMock(return_value=sample_data_result)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            # Producer
-            async def add_urls():
+            async def producer():
                 for url in urls:
                     await queue.add(url)
                 await queue.finish()
 
-            # Run producer and consumer
-            await asyncio.gather(add_urls(), queue.start())
+            await asyncio.gather(producer(), queue.start())
 
         result = queue.get_results()
-        assert len(result.successful) == 3
-        assert len(result.failed) == 0
+        assert len(result.successful) == len(urls)
+        assert result.failed == []
         assert result.success_rate == 100.0
 
     @pytest.mark.asyncio
-    async def test_download_queue_with_errors(self, sample_data_result):
-        """Test DownloadQueue handles errors correctly."""
-        queue = DownloadQueue(max_concurrent=2)
+    async def test_queue_records_failures(self, sample_data_result):
+        queue = DownloadQueue(max_concurrent=2, download_type="data")
         urls = [f"https://example.com/{i}" for i in range(3)]
 
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
+        async def download_side_effect(url):
+            if url.endswith("1"):
+                raise DownloadError("boom")
+            return sample_data_result
+
+        with patch("httpdl.clients.queue.DataDownload") as MockDataDownload:
             mock_client = AsyncMock()
-
-            def download_side_effect(url):
-                if "1" in url:
-                    raise DownloadError("Error")
-                return sample_data_result
-
             mock_client.download = AsyncMock(side_effect=download_side_effect)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            async def add_urls():
+            async def producer():
                 for url in urls:
                     await queue.add(url)
                 await queue.finish()
 
-            await asyncio.gather(add_urls(), queue.start())
+            await asyncio.gather(producer(), queue.start())
 
         result = queue.get_results()
         assert len(result.successful) == 2
         assert len(result.failed) == 1
+        assert any("boom" in str(err) for _, err in result.failed)
 
     @pytest.mark.asyncio
-    async def test_download_queue_dynamic_discovery(self, sample_data_result):
-        """Test DownloadQueue with dynamic URL discovery."""
-        queue = DownloadQueue(max_concurrent=2)
+    async def test_queue_dynamic_discovery(self, sample_data_result):
+        queue = DownloadQueue(max_concurrent=1, download_type="data")
 
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
+        with patch("httpdl.clients.queue.DataDownload") as MockDataDownload:
             mock_client = AsyncMock()
             mock_client.download = AsyncMock(return_value=sample_data_result)
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            # Simulate discovering URLs over time
-            async def discover_urls():
-                for i in range(5):
-                    await asyncio.sleep(0.01)  # Simulate discovery delay
+            async def discover():
+                for i in range(4):
+                    await asyncio.sleep(0)
                     await queue.add(f"https://example.com/{i}")
                 await queue.finish()
 
-            await asyncio.gather(discover_urls(), queue.start())
+            await asyncio.gather(discover(), queue.start())
 
         result = queue.get_results()
-        assert len(result.successful) == 5
-        assert result.total == 5
+        assert result.total == 4
+        assert len(result.successful) == 4
 
     @pytest.mark.asyncio
-    async def test_download_queue_empty(self):
-        """Test DownloadQueue with no URLs."""
-        queue = DownloadQueue(max_concurrent=2)
+    async def test_queue_supports_file_downloads(self, sample_file_result):
+        queue = DownloadQueue(max_concurrent=1, download_type="file")
 
-        with patch("httpdl.concurrency.DataDownload") as MockDataDownload:
+        with patch("httpdl.clients.queue.FileDownload") as MockFileDownload:
             mock_client = AsyncMock()
-            MockDataDownload.return_value.__aenter__.return_value = mock_client
+            mock_client.download = AsyncMock(return_value=sample_file_result)
+            MockFileDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockFileDownload.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            async def finish_immediately():
+            async def producer():
+                await queue.add("https://example.com/file.txt")
                 await queue.finish()
 
-            await asyncio.gather(finish_immediately(), queue.start())
+            await asyncio.gather(producer(), queue.start())
 
         result = queue.get_results()
-        assert len(result.successful) == 0
-        assert len(result.failed) == 0
+        assert len(result.successful) == 1
+        assert result.failed == []
+
+    @pytest.mark.asyncio
+    async def test_queue_handles_finish_without_urls(self):
+        queue = DownloadQueue(max_concurrent=2, download_type="data")
+
+        with patch("httpdl.clients.queue.DataDownload") as MockDataDownload:
+            mock_client = AsyncMock()
+            mock_client.download = AsyncMock()
+            MockDataDownload.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockDataDownload.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            async def finisher():
+                await queue.finish()
+
+            await asyncio.gather(finisher(), queue.start())
+
+        result = queue.get_results()
         assert result.total == 0
+        assert result.successful == []
+        assert result.failed == []
