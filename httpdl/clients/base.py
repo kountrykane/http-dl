@@ -21,6 +21,12 @@ from ..exceptions import (
 from ..limiting.limiting import AsyncRateLimiter
 from ..observability.logging import get_httpdl_logger, log_retry, log_redirect, HttpdlLoggerAdapter
 
+import redis.asyncio as aioredis
+from ..limiting.backends import (
+    InMemoryBackend,
+    RedisBackend,
+    MultiprocessBackend
+)
 
 class BaseDownload(ABC):
     """
@@ -80,16 +86,6 @@ class BaseDownload(ABC):
             if self.settings.redis_url is None:
                 raise ValueError("redis_url must be provided when using redis backend")
 
-            try:
-                import redis.asyncio as aioredis
-            except ImportError:
-                raise ImportError(
-                    "redis backend requires 'redis' package. "
-                    "Install with: pip install 'http-dl[redis]'"
-                )
-
-            from .limiting_backends import RedisBackend
-
             # Create Redis client
             redis_client = aioredis.from_url(
                 self.settings.redis_url,
@@ -113,13 +109,10 @@ class BaseDownload(ABC):
                     "multiprocess_manager must be provided when using multiprocess backend"
                 )
 
-            from .limiting_backends import MultiprocessBackend
-
             return MultiprocessBackend(self.settings.multiprocess_manager)
 
         else:
-            # Default: in-memory backend
-            from .limiting_backends import InMemoryBackend
+            # Default: in-memory backend (No Mutli-Process Rate Limiting, Only single process/multi-threading)
             return InMemoryBackend()
 
     async def __aenter__(self) -> "BaseDownload":

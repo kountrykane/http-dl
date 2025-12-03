@@ -1,5 +1,3 @@
-# TODO: make sure our exports line up with what tests expect.
-
 from .clients import (
     DataDownload, 
     FileDownload, 
@@ -8,10 +6,11 @@ from .clients import (
     DownloadQueue
 )
 from .models import (
-    DataDownloadResult, 
+    DataDownloadResult,
     FileDownloadResult,
-    DownloadSettings, 
-    RetryPolicy, 
+    BatchDownloadResult,
+    DownloadSettings,
+    RetryPolicy,
     Timeouts
 )
 from .exceptions import (
@@ -77,6 +76,8 @@ __all__ = [
     # Primary download classes
     "DataDownload",
     "FileDownload",
+    "BatchDownload",
+    "DownloadQueue",
 
     # Configuration
     "DownloadSettings",
@@ -86,6 +87,7 @@ __all__ = [
     # Result models
     "DataDownloadResult",
     "FileDownloadResult",
+    "BatchDownloadResult",
 
     # Base class (for extending)
     "BaseDownload",
