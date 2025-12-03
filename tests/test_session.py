@@ -206,7 +206,7 @@ class TestSessionDownload:
         # Create session file
         temp_session_file.write_text(json.dumps(sample_session_data))
 
-        with patch("httpdl.session.BaseDownload.__aenter__") as mock_base_enter:
+        with patch("httpdl.clients.base.BaseDownload.__aenter__") as mock_base_enter:
             mock_base_enter.return_value = AsyncMock()
 
             client = SessionDownload(session_file=temp_session_file)
@@ -220,8 +220,8 @@ class TestSessionDownload:
     @pytest.mark.asyncio
     async def test_context_manager_saves_session(self, temp_session_file):
         """Test SessionDownload saves session on context exit."""
-        with patch("httpdl.session.BaseDownload.__aenter__") as mock_base_enter, \
-             patch("httpdl.session.BaseDownload.__aexit__") as mock_base_exit:
+        with patch("httpdl.clients.base.BaseDownload.__aenter__") as mock_base_enter, \
+             patch("httpdl.clients.base.BaseDownload.__aexit__") as mock_base_exit:
 
             mock_base_enter.return_value = AsyncMock()
             mock_base_exit.return_value = AsyncMock()
@@ -241,8 +241,8 @@ class TestSessionDownload:
     @pytest.mark.asyncio
     async def test_context_manager_no_auto_save(self, temp_session_file):
         """Test SessionDownload doesn't save when auto_save=False."""
-        with patch("httpdl.session.BaseDownload.__aenter__") as mock_base_enter, \
-             patch("httpdl.session.BaseDownload.__aexit__") as mock_base_exit:
+        with patch("httpdl.clients.base.BaseDownload.__aenter__") as mock_base_enter, \
+             patch("httpdl.clients.base.BaseDownload.__aexit__") as mock_base_exit:
 
             mock_base_enter.return_value = AsyncMock()
             mock_base_exit.return_value = AsyncMock()
