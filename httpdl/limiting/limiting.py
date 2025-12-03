@@ -16,10 +16,10 @@ import asyncio
 import time
 from typing import Optional, TYPE_CHECKING
 
-from .logging import get_httpdl_logger, log_rate_limit
+from ..observability.logging import get_httpdl_logger, log_rate_limit
 
 if TYPE_CHECKING:
-    from .limiting_backends import RateLimiterBackend
+    from .backends import BaseLimiterBackend, InMemoryBackend
 
 
 class AsyncTokenBucket:
@@ -36,7 +36,7 @@ class AsyncTokenBucket:
         self,
         rate: float,
         capacity: Optional[float] = None,
-        backend: Optional["RateLimiterBackend"] = None,
+        backend: Optional["BaseLimiterBackend"] = None,
     ):
         """
         Initialize token bucket with pluggable backend.
@@ -58,7 +58,6 @@ class AsyncTokenBucket:
 
         # Initialize backend
         if backend is None:
-            from .limiting_backends import InMemoryBackend
             backend = InMemoryBackend()
 
         self._backend = backend
@@ -207,7 +206,7 @@ class AsyncRateLimiter:
         self,
         rate: int,
         capacity: Optional[int] = None,
-        backend: Optional["RateLimiterBackend"] = None,
+        backend: Optional["BaseLimiterBackend"] = None,
     ):
         """
         Initialize rate limiter with pluggable backend.

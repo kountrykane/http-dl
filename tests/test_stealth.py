@@ -3,11 +3,9 @@ Tests for stealth features: User-Agent rotation and header management.
 """
 
 import pytest
-from httpdl.stealth import (
+from httpdl.stealth.stealth import (
     UserAgentRotator,
-    HeaderRotator,
     BrowserProfile,
-    get_random_headers,
     DESKTOP_USER_AGENTS,
     MOBILE_USER_AGENTS,
     BOT_USER_AGENTS,

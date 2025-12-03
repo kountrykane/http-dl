@@ -8,8 +8,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from httpdl.streaming import StreamingDownload, download_with_retry, StreamingResult
-from httpdl.config import DownloadSettings
+from httpdl import FileDownload, DownloadSettings
+from httpdl.models.results import FileDownloadResult
 from httpdl.exceptions import DownloadError, InvalidURLError
 
 
@@ -34,14 +34,14 @@ def sample_checksum():
     return hashlib.sha256(content).hexdigest()
 
 
-class TestStreamingDownload:
-    """Test StreamingDownload class."""
+class TestFileDownload:
+    """Test FileDownload class."""
 
     @pytest.mark.asyncio
     async def test_initialization(self):
-        """Test StreamingDownload initializes correctly."""
+        """Test FileDownload initializes correctly."""
         settings = DownloadSettings()
-        client = StreamingDownload(settings)
+        client = FileDownload(settings)
 
         assert client.settings == settings
         assert "md5" in client._checksums
@@ -51,7 +51,7 @@ class TestStreamingDownload:
     @pytest.mark.asyncio
     async def test_head_request_empty_url(self):
         """Test head_request raises InvalidURLError for empty URL."""
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             with pytest.raises(InvalidURLError):
                 await client.head_request("")
 
@@ -72,7 +72,7 @@ class TestStreamingDownload:
         mock_client = AsyncMock()
         mock_client_class.return_value = mock_client
 
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             client._client = mock_client
 
             # Mock _do_request_with_retry
@@ -89,7 +89,7 @@ class TestStreamingDownload:
     @pytest.mark.asyncio
     async def test_download_empty_url(self, temp_download_dir):
         """Test download raises InvalidURLError for empty URL."""
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             with pytest.raises(InvalidURLError):
                 await client.download(
                     url="",
@@ -101,7 +101,7 @@ class TestStreamingDownload:
         """Test download creates parent directories."""
         nested_path = temp_download_dir / "nested" / "dir" / "file.txt"
 
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             # Mock the HEAD and download process
             client.head_request = AsyncMock(return_value={
                 "content_length": len(sample_content),
@@ -132,7 +132,7 @@ class TestStreamingDownload:
         """Test download with successful checksum validation."""
         file_path = temp_download_dir / "file.txt"
 
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             # Mock HEAD request
             client.head_request = AsyncMock(return_value={
                 "content_length": len(sample_content),
@@ -167,7 +167,7 @@ class TestStreamingDownload:
         file_path = temp_download_dir / "file.txt"
         wrong_checksum = "wrong_checksum_value"
 
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             # Mock HEAD request
             client.head_request = AsyncMock(return_value={
                 "content_length": len(sample_content),
@@ -202,7 +202,7 @@ class TestStreamingDownload:
         file_path = temp_download_dir / "file.txt"
         etag = '"abc123"'
 
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             client.head_request = AsyncMock(return_value={
                 "content_length": len(sample_content),
                 "etag": etag,
@@ -233,7 +233,7 @@ class TestStreamingDownload:
         """Test download raises error for unsupported checksum type."""
         file_path = temp_download_dir / "file.txt"
 
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             with pytest.raises(ValueError, match="Unsupported checksum type"):
                 await client.download(
                     url="https://example.com/file.txt",
@@ -250,7 +250,7 @@ class TestStreamingDownload:
         async def progress_callback(current, total):
             progress_calls.append((current, total))
 
-        async with StreamingDownload() as client:
+        async with FileDownload() as client:
             client.head_request = AsyncMock(return_value={
                 "content_length": len(sample_content),
                 "etag": None,
@@ -279,17 +279,14 @@ class TestStreamingDownload:
         assert last_call[1] == len(sample_content)  # Total bytes
 
 
-class TestDownloadWithRetry:
-    """Test download_with_retry convenience function."""
-
     @pytest.mark.asyncio
     async def test_download_with_retry_success(self, temp_download_dir, sample_content):
         """Test successful download with retry."""
         file_path = temp_download_dir / "file.txt"
 
-        with patch("httpdl.streaming.StreamingDownload") as MockStreamingDownload:
+        with patch("httpdl.streaming.FileDownload") as MockFileDownload:
             mock_client = AsyncMock()
-            mock_result = StreamingResult(
+            mock_result = FileDownloadResult(
                 url="https://example.com/file.txt",
                 file_path=file_path,
                 size_bytes=len(sample_content),
@@ -301,7 +298,7 @@ class TestDownloadWithRetry:
                 content_type="text/plain"
             )
             mock_client.download = AsyncMock(return_value=mock_result)
-            MockStreamingDownload.return_value.__aenter__.return_value = mock_client
+            MockFileDownload.return_value.__aenter__.return_value = mock_client
 
             result = await download_with_retry(
                 url="https://example.com/file.txt",
@@ -317,13 +314,13 @@ class TestDownloadWithRetry:
         """Test download_with_retry retries on failure."""
         file_path = temp_download_dir / "file.txt"
 
-        with patch("httpdl.streaming.StreamingDownload") as MockStreamingDownload:
+        with patch("httpdl.streaming.FileDownload") as MockFileDownload:
             mock_client = AsyncMock()
             # Fail twice, succeed on third attempt
             mock_client.download = AsyncMock(side_effect=[
                 DownloadError("Failed 1"),
                 DownloadError("Failed 2"),
-                StreamingResult(
+                FileDownloadResult(
                     url="https://example.com/file.txt",
                     file_path=file_path,
                     size_bytes=100,
@@ -335,7 +332,7 @@ class TestDownloadWithRetry:
                     content_type="text/plain"
                 )
             ])
-            MockStreamingDownload.return_value.__aenter__.return_value = mock_client
+            MockFileDownload.return_value.__aenter__.return_value = mock_client
 
             result = await download_with_retry(
                 url="https://example.com/file.txt",
@@ -352,10 +349,10 @@ class TestDownloadWithRetry:
         """Test download_with_retry fails after max retries."""
         file_path = temp_download_dir / "file.txt"
 
-        with patch("httpdl.streaming.StreamingDownload") as MockStreamingDownload:
+        with patch("httpdl.streaming.FileDownload") as MockFileDownload:
             mock_client = AsyncMock()
             mock_client.download = AsyncMock(side_effect=DownloadError("Always fails"))
-            MockStreamingDownload.return_value.__aenter__.return_value = mock_client
+            MockFileDownload.return_value.__aenter__.return_value = mock_client
 
             with pytest.raises(DownloadError, match="Always fails"):
                 await download_with_retry(

@@ -18,9 +18,9 @@ from datetime import datetime
 
 import httpx
 
-from .core import BaseDownload
-from .config import DownloadSettings
-from .logging import get_httpdl_logger
+from ..clients.base import BaseDownload
+from ..models.config import DownloadSettings
+from ..observability.logging import get_httpdl_logger
 
 
 class SessionManager:

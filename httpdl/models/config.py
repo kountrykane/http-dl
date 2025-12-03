@@ -3,8 +3,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Any
 
 if TYPE_CHECKING:
-    from .logging import HttpdlLoggerAdapter
-    from .limiting_backends import RateLimiterBackend
+    from ..observability.logging import HttpdlLoggerAdapter
+    from ..limiting.backends.base import BaseLimiterBackend
 
 DEFAULT_UA = "edgarSYS j.jansenbravo@gmail.com"
 DEFAULT_BASE_URL = "https://www.sec.gov"

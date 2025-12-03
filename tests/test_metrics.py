@@ -6,13 +6,12 @@ import pytest
 from unittest.mock import patch
 from datetime import datetime, timedelta
 
-from httpdl.metrics import (
+from httpdl.observability.metrics import (
     MetricsCollector,
     RequestMetrics,
     MetricsSnapshot,
     get_metrics_collector,
     format_snapshot,
-    reset_metrics_collector,
 )
 
 

@@ -1,5 +1,5 @@
 """
-Tests for concurrency utilities and batch operations.
+Tests for batch download operations - BatchDownload and DownloadQueue.
 """
 
 import asyncio
@@ -7,17 +7,9 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from httpdl.concurrency import (
-    download_batch,
-    download_files_batch,
-    map_concurrent,
-    retry_failed,
-    DownloadQueue,
-    BatchResult,
-)
-from httpdl.models import DataDownloadResult, FileDownloadResult
+from httpdl import BatchDownload, DownloadQueue, DownloadSettings
+from httpdl.models.results import DataDownloadResult, FileDownloadResult, BatchDownloadResult
 from httpdl.exceptions import DownloadError
-from httpdl.config import DownloadSettings
 
 
 @pytest.fixture

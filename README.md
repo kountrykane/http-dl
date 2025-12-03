@@ -92,9 +92,9 @@ async with DataDownload(settings) as client:
 
 ```python
 from pathlib import Path
-from httpdl.streaming import StreamingDownload
+from httpdl import FileDownload
 
-async with StreamingDownload() as client:
+async with FileDownload() as client:
     result = await client.download(
         url="https://example.com/large-file.zip",
         file_path=Path("downloads/file.zip"),
@@ -108,22 +108,28 @@ async with StreamingDownload() as client:
 ### Batch Downloads
 
 ```python
-from httpdl.concurrency import download_batch
+from httpdl import DataDownload, BatchDownload
 
-urls = [
-    "https://www.sec.gov/files/company_tickers.json",
-    "https://www.sec.gov/files/company_tickers_exchange.json",
-    # ... more URLs
-]
+# Option 1: Use BatchDownload convenience class
+async with BatchDownload(download_type="data", max_concurrent=10) as batch:
+    result = await batch.download(
+        urls=[
+            "https://www.sec.gov/files/company_tickers.json",
+            "https://www.sec.gov/files/company_tickers_exchange.json",
+        ],
+        on_success=lambda r: print(f"✓ {r.url}"),
+        on_error=lambda url, e: print(f"✗ {url}: {e}")
+    )
+    print(f"Success rate: {result.success_rate:.1f}%")
 
-result = await download_batch(
-    urls=urls,
-    max_concurrent=10,
-    on_success=lambda r: print(f"✓ {r.url}"),
-    on_error=lambda url, e: print(f"✗ {url}: {e}")
-)
-
-print(f"Success rate: {result.success_rate:.1f}%")
+# Option 2: Use batch methods on download clients
+async with DataDownload() as client:
+    result = await client.download_batch(
+        urls=urls,
+        max_concurrent=10,
+        on_success=lambda r: print(f"✓ {r.url}"),
+        on_error=lambda url, e: print(f"✗ {url}: {e}")
+    )
 ```
 
 ### Metrics & Monitoring
@@ -187,18 +193,57 @@ async with DataDownload() as client:
 
 ## Documentation
 
-- [Download Clients](docs/download.md) - DataDownload vs FileDownload
-- [Rate Limiting](docs/limiting.md) - Multi-process backends
-- [Streaming Downloads](docs/streaming.md) - Resumable downloads
+- [Client APIs](docs/clients.md) - DataDownload, FileDownload, BatchDownload, DownloadQueue
+- [Rate Limiting](docs/limiting.md) - Multi-process backends (Redis, multiprocessing, in-memory)
 - [Metrics](docs/metrics.md) - Monitoring and observability
-- [Concurrency](docs/concurrency.md) - Batch operations
-- [Stealth Mode](docs/stealth.md) - User-Agent rotation
-- [Session Management](docs/session.md) - Cookie persistence
-- [Logging](docs/logging.md) - Structured logging
-- [Exceptions](docs/exceptions.md) - Error handling
-- [Models](docs/models.md) - Configuration and results
+- [Logging](docs/logging.md) - Structured logging and observability
+- [Exceptions](docs/exceptions.md) - Error handling and exception hierarchy
+- [Models](docs/models.md) - Configuration and result models
 
 ## Migration from 0.1.x to 0.2.0
+
+### StreamingDownload Merged into FileDownload
+```python
+# Old (0.1.x): Separate StreamingDownload class
+from httpdl.streaming import StreamingDownload
+
+async with StreamingDownload() as client:
+    result = await client.download(url, file_path=path)
+
+# New (0.2.0): FileDownload includes all streaming features
+from httpdl import FileDownload
+
+async with FileDownload() as client:
+    result = await client.download(
+        url,
+        file_path=path,
+        resume=True,  # Built-in resumable downloads
+        checksum_type="sha256",
+        progress_callback=callback
+    )
+```
+
+### Batch Downloads Now Class-Based
+```python
+# Old (0.1.x): Functional batch API
+from httpdl.concurrency import download_batch
+
+result = await download_batch(urls)
+
+# New (0.2.0): Option 1 - BatchDownload convenience class
+from httpdl import BatchDownload
+
+async with BatchDownload(download_type="data") as batch:
+    result = await batch.download(urls)
+
+# Option 2 - Direct batch methods on clients
+from httpdl import DataDownload
+
+async with DataDownload() as client:
+    result = await client.download_batch(urls)
+
+# Functional wrappers still available for backward compatibility
+```
 
 ### HTTP/2 Now Enabled by Default
 ```python

@@ -75,7 +75,7 @@ client decodes to `text`; otherwise, the raw bytes are retained in `bytes_`.
 
 ### `FileDownloadResult`
 
-Captures metadata for raw downloads performed by `FileDownload`.
+Captures metadata for raw downloads performed by `FileDownload`, including streaming, resumable downloads, and checksum validation.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -84,12 +84,22 @@ Captures metadata for raw downloads performed by `FileDownload`.
 | `headers` | `Mapping[str, str]` | Response headers snapshot. |
 | `content_type` | `str | None` | Raw `Content-Type` header value. |
 | `content_encoding` | `str | None` | Raw `Content-Encoding` header (gzip/deflate/etc.). |
+| `kind` | `str | None` | Optional classification for downstream consumers. |
 | `file_path` | `Path | None` | Filesystem location when streaming to disk. |
-| `bytes_` | `bytes | None` | In-memory payload when `stream_to_disk=False`. |
+| `bytes_` | `bytes | None` | In-memory payload when not saved to disk. |
 | `duration_ms` | `int` | Total download time. |
 | `size_bytes` | `int` | Total bytes written or buffered. |
 | `saved_to_disk` | `bool` | Indicates whether a file was persisted locally. |
-| `redirect_chain` | `list[str]` | List of URLs visited during redirect following (empty for streaming mode). |
+| `redirect_chain` | `list[str]` | List of URLs visited during redirect following. |
+| `checksum` | `str | None` | Computed checksum value (if checksum validation was requested). |
+| `checksum_type` | `str | None` | Checksum algorithm used (`"md5"`, `"sha256"`, or `"sha512"`). |
+| `resumed` | `bool` | Whether the download was resumed from a partial file. |
+| `etag` | `str | None` | ETag header value from the response (used for resume validation). |
+
+**New in 0.2.0**: FileDownload now includes all streaming features:
+- **Resumable downloads**: Set `resume=True` to automatically resume interrupted downloads using ETag validation and HTTP Range headers.
+- **Checksum validation**: Specify `checksum_type` and `expected_checksum` to verify file integrity after download.
+- **Progress tracking**: Use `progress_callback` for real-time download progress monitoring.
 
 Future integrations (e.g., S3) can replace `file_path` with object-store
 identifiers while keeping the rest of the schema stable.

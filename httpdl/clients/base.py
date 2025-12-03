@@ -6,8 +6,8 @@ from typing import Optional
 
 import httpx
 
-from .config import DownloadSettings
-from .exceptions import (
+from ..models.config import DownloadSettings
+from ..exceptions import (
     RateLimitError,
     RetryAttemptsExceeded,
     TooManyRedirectsError,
@@ -18,8 +18,8 @@ from .exceptions import (
     ConnectionError as DownloadConnectionError,
     DNSResolutionError,
 )
-from .limiting import AsyncRateLimiter
-from .logging import get_httpdl_logger, log_retry, log_redirect, HttpdlLoggerAdapter
+from ..limiting.limiting import AsyncRateLimiter
+from ..observability.logging import get_httpdl_logger, log_retry, log_redirect, HttpdlLoggerAdapter
 
 
 class BaseDownload(ABC):
@@ -50,6 +50,30 @@ class BaseDownload(ABC):
         self._host_semaphores: dict[str, asyncio.Semaphore] = {}
         self._logger = self.settings.logger or get_httpdl_logger(__name__)
 
+        # Initialize User-Agent rotator if enabled
+        self._user_agent_rotator = None
+        if self.settings.rotate_user_agent:
+            from ..stealth.stealth import UserAgentRotator
+            self._user_agent_rotator = UserAgentRotator(
+                mode=self.settings.user_agent_mode,
+                custom_agents=self.settings.custom_user_agents
+            )
+            self._logger.info(
+                "stealth.rotator_enabled",
+                mode=self.settings.user_agent_mode,
+                custom_count=len(self.settings.custom_user_agents or [])
+            )
+
+        # Initialize session manager if enabled
+        self._session_manager = None
+        if self.settings.enable_cookies and self.settings.session_file:
+            from ..session.manager import SessionManager
+            self._session_manager = SessionManager(session_file=self.settings.session_file)
+            self._logger.info(
+                "session.manager_enabled",
+                session_file=str(self.settings.session_file)
+            )
+
     def _create_rate_limit_backend(self):
         """Create appropriate rate limiting backend based on settings."""
         if self.settings.rate_limit_backend == "redis":
@@ -78,8 +102,8 @@ class BaseDownload(ABC):
                 key_prefix=self.settings.redis_key_prefix,
             )
 
-            # Initialize Redis state
-            asyncio.create_task(backend.initialize(min(1.0, self.settings.requests_per_second)))
+            # Note: Redis backend will be initialized on first use in AsyncRateLimiter
+            # We cannot await here since this is called from __init__ (non-async context)
 
             return backend
 
@@ -99,9 +123,15 @@ class BaseDownload(ABC):
             return InMemoryBackend()
 
     async def __aenter__(self) -> "BaseDownload":
+        # Rotate User-Agent if enabled
+        user_agent = self.settings.user_agent
+        if self._user_agent_rotator:
+            user_agent = self._user_agent_rotator.get_random_user_agent()
+            self._logger.debug("stealth.user_agent_rotated", user_agent=user_agent[:50] + "...")
+
         self._client = httpx.AsyncClient(
             headers={
-                "User-Agent": self.settings.user_agent,
+                "User-Agent": user_agent,
                 "Accept": self.settings.accept,
                 "Accept-Encoding": self.settings.accept_encoding,
                 "Connection": self.settings.connection,
@@ -119,18 +149,31 @@ class BaseDownload(ABC):
                 keepalive_expiry=self.settings.timeouts.pool,
             ),
         )
+
+        # Load session if enabled
+        if self._session_manager:
+            loaded = await self._session_manager.load_session(self._client)
+            if loaded:
+                self._logger.info("session.loaded", cookie_count=len(self._client.cookies))
+
         self._logger.debug(
             "client.initialized",
             http2=self.settings.http2,
             requests_per_second=self.settings.requests_per_second,
             max_concurrency_per_host=self.settings.max_concurrency_per_host,
             max_connections=self.settings.max_connections,
-            rate_limit_backend=self.settings.rate_limit_backend or "in-memory"
+            rate_limit_backend=self.settings.rate_limit_backend or "in-memory",
+            stealth_enabled=self._user_agent_rotator is not None,
+            session_enabled=self._session_manager is not None
         )
         return self
 
     async def __aexit__(self, *exc) -> None:
         if self._client is not None:
+            # Save session if enabled
+            if self._session_manager:
+                await self._session_manager.save_session(self._client)
+
             await self._client.aclose()
             self._client = None
             self._logger.debug("client.closed")

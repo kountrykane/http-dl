@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, List, Any
 
 
 @dataclass
@@ -45,3 +45,22 @@ class FileDownloadResult:
     size_bytes: int = 0                     # Size of raw downloaded bytes
     saved_to_disk: bool = False             # Whether the file was saved to disk
     redirect_chain: list[str] = field(default_factory=list)  # URLs visited during redirects
+    checksum: Optional[str] = None          # Computed checksum (if requested)
+    checksum_type: Optional[str] = None     # Checksum algorithm used (md5, sha256, sha512)
+    resumed: bool = False                   # Whether download was resumed from partial file
+    etag: Optional[str] = None              # ETag header value for resume support
+
+@dataclass
+class BatchDownloadResult:
+    """Result of a batch download operation."""
+
+    successful: List[Any]
+    failed: List[tuple[str, Exception]]
+    total: int
+
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate as a percentage."""
+        if self.total == 0:
+            return 0.0
+        return (len(self.successful) / self.total) * 100

@@ -7,10 +7,7 @@ import time
 
 import pytest
 
-import os
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from httpdl.limiting import AsyncTokenBucket
+from httpdl.limiting.limiting import AsyncTokenBucket
 
 """
 The variation in Request Rate/Frequency is just measurement noise from the OS + event loop. 

@@ -1,25 +1,19 @@
-"""
-HTTP-DL - Production-Ready HTTP Client
+# TODO: make sure our exports line up with what tests expect.
 
-An async HTTP client with enterprise features:
-- Multi-process rate limiting (Redis, multiprocessing, or in-memory)
-- HTTP/2 support enabled by default
-- Comprehensive metrics and monitoring
-- Batch download utilities with concurrency control
-- Automatic retries with exponential backoff
-- Structured exception hierarchy
-
-Two download modes available:
-- DataDownload: Processes and decodes content (text decoding, decompression, classification)
-- FileDownload: Downloads raw files without processing (preserves original encoding)
-
-All download operations are async and must be awaited.
-"""
-
-from .download import DataDownload, FileDownload
-from .config import DownloadSettings, RetryPolicy, Timeouts
-from .models import DataDownloadResult, FileDownloadResult
-from .core import BaseDownload
+from .clients import (
+    DataDownload, 
+    FileDownload, 
+    BaseDownload, 
+    BatchDownload, 
+    DownloadQueue
+)
+from .models import (
+    DataDownloadResult, 
+    FileDownloadResult,
+    DownloadSettings, 
+    RetryPolicy, 
+    Timeouts
+)
 from .exceptions import (
     # Base exceptions
     DownloadError,
@@ -70,26 +64,12 @@ from .utils import (
     decode_text,
     decompress_transfer,
 )
-from .metrics import (
+from .observability.metrics import (
     MetricsCollector,
     MetricsSnapshot,
     RequestMetrics,
     get_metrics_collector,
     format_snapshot,
-)
-from .concurrency import (
-    download_batch,
-    download_files_batch,
-    map_concurrent,
-    retry_failed,
-    DownloadQueue,
-    BatchResult,
-)
-
-from .streaming import (
-    StreamingDownload, 
-    download_with_retry, 
-    StreamingResult,
 )
 
 
@@ -116,14 +96,6 @@ __all__ = [
     "RequestMetrics",
     "get_metrics_collector",
     "format_snapshot",
-
-    # Concurrency utilities
-    "download_batch",
-    "download_files_batch",
-    "map_concurrent",
-    "retry_failed",
-    "DownloadQueue",
-    "BatchResult",
 
     # Base exceptions
     "DownloadError",
@@ -173,9 +145,4 @@ __all__ = [
     "classify_kind",
     "decode_text",
     "decompress_transfer",
-
-    # Streaming Methods
-    "StreamingDownload", 
-    "download_with_retry", 
-    "StreamingResult",
 ]

@@ -7,11 +7,11 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from httpdl.limiting_backends import (
+from httpdl.limiting.backends import (
     InMemoryBackend,
     RedisBackend,
     MultiprocessBackend,
-    RateLimiterBackend,
+    BaseLimiterBackend,
 )
 
 
