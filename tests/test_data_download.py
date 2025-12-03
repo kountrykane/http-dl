@@ -375,8 +375,9 @@ class TestMetadataCapture:
 
         result = await data_client.download("https://example.com/data.json")
 
-        assert result.headers["Content-Type"] == "application/json"
-        assert result.headers["X-Custom-Header"] == "test-value"
+        # httpx.Headers are case-insensitive, but when converted to dict they use lowercase keys
+        assert result.headers["content-type"] == "application/json"
+        assert result.headers["x-custom-header"] == "test-value"
 
     @pytest.mark.asyncio
     async def test_download_captures_content_metrics(self, data_client):

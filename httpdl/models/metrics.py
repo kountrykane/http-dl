@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 from datetime import datetime
+from collections import defaultdict
 
 @dataclass
 class RequestMetrics:
